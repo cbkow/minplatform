@@ -4,10 +4,12 @@
 //! a made-up https host (S15's Windows run, 2026-11-15), the network shut by a request filter; a machine without the
 //! runtime shows the file as its source text.
 //!
-//! The rules (S15): the view is made unfocused; the page is loaded with read access to ITS OWN FOLDER only; nothing is
-//! fetched from the network (a content rule list, in place BEFORE the page loads); a navigation out of the folder and
-//! a new window are refused; Escape pressed inside the page is told to us by a script of ours; the keys are given back
-//! to our view before the web view is dropped; nothing of ours can be drawn over it - it is a system view above our
+//! The rules (S15; the network by rows 460 and 512): the view is made unfocused; the page is loaded with read access
+//! to ITS OWN FOLDER only; what the page EMBEDS from the web (pictures, players, fonts, frames) is loaded; a link to
+//! another page is NOT followed in the view - it is told to us (`open:<address>`) and opened in the system's browser,
+//! as is a new window the page asks for; a file outside the page's folder is refused; nothing of a page is kept (no
+//! cookies, no storage); Escape pressed inside the page is told to us by a script of ours; the keys are given back to
+//! our view before the web view is dropped; nothing of ours can be drawn over it - it is a system view above our
 //! surface, so the lightbox keeps its own controls outside the view's rectangle.
 use kurbo::Rect;
 use std::cell::RefCell;
@@ -15,22 +17,31 @@ use std::path::Path;
 use std::rc::Rc;
 
 pub type Win = std::sync::Arc<Box<dyn winit31::window::Window>>;
-/// What the page told: `key:Escape`, `title:...`, `load:finished`, `blocked:<address>`.
+/// What the page told: `key:Escape`, `title:...`, `load:finished`, `blocked:<address>`, `open:<address>` (a link to
+/// the web that was pressed: for the system's browser).
 pub type Msgs = Rc<RefCell<Vec<String>>>;
+
+/// Our script's second half, on both systems: a press on a link that leads to the web (or to a mail address) is not
+/// followed in the view - its address is told to the host. `POST` is the system's way of telling; `OWN` the host name
+/// under which the page's own folder is served (Windows), which is no link "to the web".
+#[cfg(any(target_os = "macos", windows))]
+fn link_script(post: &str, own: &str) -> String {
+    format!(r#"document.addEventListener('click', e => {{ const a = e.target && e.target.closest && e.target.closest('a[href]'); if (!a) return; let u; try {{ u = new URL(a.href, location.href); }} catch (x) {{ return; }}
+      if ((u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'mailto:') && u.host !== '{own}') {{ e.preventDefault(); e.stopPropagation(); {post}('open:' + u.href); }} }}, true); window.__ufbLinks = 1;"#)
+}
+/// An address the system's browser may be handed: the web or a mail address, nothing else (never a file, never a script).
+pub fn outward(url: &str) -> bool { let l = url.to_ascii_lowercase(); l.starts_with("http://") || l.starts_with("https://") || l.starts_with("mailto:") }
 
 #[cfg(target_os = "macos")]
 mod imp {
     use super::*;
     use objc2::rc::Retained; use objc2::runtime::{AnyObject, NSObject, ProtocolObject}; use objc2::{define_class, msg_send, DeclaredClass, MainThreadMarker, MainThreadOnly};
-    use objc2_foundation::{NSError, NSObjectProtocol, NSString, NSURL}; use objc2_web_kit::{WKContentRuleList, WKContentRuleListStore, WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
+    use objc2_foundation::{NSObjectProtocol, NSString, NSURL}; use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
     use wry::dpi::{LogicalPosition, LogicalSize}; use wry::WebViewExtMacOS;
 
     /// Our script, put in every page before the page's own: Escape is told to the host (the page has the keys once it
     /// was clicked). Through a message handler of OUR OWN: the library's channel drops what a file page sends.
     const INIT: &str = r#"window.addEventListener('keydown', e => { if (e.key === 'Escape') { const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ufb; if (h) h.postMessage('key:Escape'); e.preventDefault(); e.stopPropagation(); } }, true);"#;
-    /// Nothing is fetched from the network: every http(s) and socket address is blocked for the page.
-    const RULES: &str = r#"[{"trigger":{"url-filter":"^https?://.*"},"action":{"type":"block"}},{"trigger":{"url-filter":"^wss?://.*"},"action":{"type":"block"}},{"trigger":{"url-filter":"^ftp://.*"},"action":{"type":"block"}}]"#;
-
     pub struct Ivars { told: Box<dyn Fn(String)> }
     define_class!(
         #[unsafe(super(NSObject))] #[thread_kind = MainThreadOnly] #[name = "UFBWebMessageHandler"] #[ivars = Ivars]
@@ -60,28 +71,23 @@ mod imp {
             .with_incognito(true)             // a preview leaves nothing behind (no cookies, no storage)
             .with_back_forward_navigation_gestures(false)
             .with_initialization_script(INIT)
+            .with_initialization_script(link_script("window.webkit.messageHandlers.ufb.postMessage", ""))
             .with_document_title_changed_handler(move |t| p1(format!("title:{t}")))
             .with_on_page_load_handler(move |e, _url| if matches!(e, wry::PageLoadEvent::Finished) { p2("load:finished".into()) })
-            .with_navigation_handler(move |url| { let ours = url.starts_with(&root) || url.starts_with("about:"); if !ours { p3(format!("blocked:{url}")); } ours })
-            .with_new_window_req_handler(move |url, _f| { p4(format!("blocked:{url}")); wry::NewWindowResponse::Deny })
+            // (this is asked for every frame, and tells no frame from the page: the web is let through - it is what a
+            // page embeds; a pressed link never comes here, our script has it; a file outside the folder is refused)
+            .with_navigation_handler(move |url| { let ours = url.starts_with(&root) || url.starts_with("about:") || url.starts_with("http://") || url.starts_with("https://") || url.starts_with("data:") || url.starts_with("blob:"); if !ours { p3(format!("blocked:{url}")); } ours })
+            .with_new_window_req_handler(move |url, _f| { p4(if outward(&url) { format!("open:{url}") } else { format!("blocked:{url}") }); wry::NewWindowResponse::Deny })
             .build_as_child(window).map_err(|e| e.to_string())?;
         let controller = view.manager();
         let h: Retained<Handler> = unsafe { msg_send![super(Handler::alloc(mtm).set_ivars(Ivars { told: Box::new(push.clone()) })), init] };
         #[allow(unused_unsafe)] unsafe { controller.addScriptMessageHandler_name(ProtocolObject::from_ref(&*h), &NSString::from_str("ufb")) };
-        // The page is loaded only once the rule that keeps it off the network is in place (the rule is compiled by the
-        // system, which answers on this thread a moment later). Should the rule fail, the page is NOT loaded.
+        // the page, with read access to its own folder alone
         let wk = view.webview(); let wk: Retained<AnyObject> = unsafe { Retained::cast_unchecked(wk) };
         let file = NSURL::fileURLWithPath(&NSString::from_str(&page.to_string_lossy()));
         let dir = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&folder.to_string_lossy()), true);
-        let fail = push.clone();
-        let done = block2::RcBlock::new(move |list: *mut WKContentRuleList, _err: *mut NSError| {
-            let Some(list) = (unsafe { list.as_ref() }) else { fail("failed:the network rule could not be made".into()); return };
-            #[allow(unused_unsafe)] unsafe { controller.addContentRuleList(list); }
-            let nav: Option<Retained<AnyObject>> = unsafe { msg_send![&*wk, loadFileURL: &*file, allowingReadAccessToURL: &*dir] };
-            if nav.is_none() { fail("failed:the page could not be loaded".into()); }
-        });
-        let store = unsafe { WKContentRuleListStore::defaultStore(mtm) }.ok_or("no content rule store")?;
-        unsafe { store.compileContentRuleListForIdentifier_encodedContentRuleList_completionHandler(Some(&NSString::from_str("ufb-preview-offline")), Some(&NSString::from_str(RULES)), Some(&done)) };
+        let nav: Option<Retained<AnyObject>> = unsafe { msg_send![&*wk, loadFileURL: &*file, allowingReadAccessToURL: &*dir] };
+        if nav.is_none() { return Err("the page could not be loaded".into()) }
         Ok(Web { view, msgs, rect: std::cell::Cell::new((rect, scale)) })
     }
     impl Web {
@@ -101,17 +107,16 @@ mod imp {
 }
 
 /// Windows: WebView2 through `wry` (S15's Windows code, carried). The page's folder is served under a made-up https
-/// host - the page has a real origin, reads its own folder and names nothing else on the disk. The network is shut by
-/// a request filter of ours: any request that is not for that host (or a `data:` / `blob:` / `about:` address) is
-/// answered "403" before it leaves. (A WebSocket is not a request the filter sees: not shut - a known limit.)
-/// WebView2 keeps a profile folder: it lies in our cache folder (beside the executable, its default, is not writable
-/// for an installed program); the view is private, so nothing of a page stays in it.
+/// host - the page has a real origin, reads its own folder and names nothing else on the disk. The web is open to
+/// what the page embeds (row 512); the page itself never leaves its folder: a navigation of the page to the web is
+/// refused and handed to the system's browser. WebView2 keeps a profile folder: it lies in our cache folder (beside
+/// the executable, its default, is not writable for an installed program); the view is private, so nothing of a
+/// page stays in it.
 #[cfg(windows)]
 mod imp {
     use super::*;
-    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_3, COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL};
-    use webview2_com::{take_pwstr, WebResourceRequestedEventHandler};
-    use windows::core::{Interface, HSTRING, PCWSTR, PWSTR};
+    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_3, COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS};
+    use windows::core::{Interface, HSTRING, PCWSTR};
     use wry::dpi::{LogicalPosition, LogicalSize}; use wry::WebViewExtWindows;
 
     const HOST: &str = "ufb.preview";
@@ -140,27 +145,16 @@ mod imp {
             .with_focused(false)
             .with_incognito(true)
             .with_initialization_script(INIT)
+            .with_initialization_script(link_script("window.ipc.postMessage", HOST))
             .with_ipc_handler(move |req| p0(req.body().clone()))
             .with_document_title_changed_handler(move |t| p1(format!("title:{t}")))
             .with_on_page_load_handler(move |e, _url| if matches!(e, wry::PageLoadEvent::Finished) { p2("load:finished".into()) })
-            .with_navigation_handler(move |url| { let ours = url.starts_with(&root) || url.starts_with("about:"); if !ours { p3(format!("blocked:{url}")); } ours })
-            .with_new_window_req_handler(move |url, _f| { p4(format!("blocked:{url}")); wry::NewWindowResponse::Deny })
+            // (asked for the page itself, not for its frames: the page stays in its folder, the web goes to the browser)
+            .with_navigation_handler(move |url| { let ours = url.starts_with(&root) || url.starts_with("about:"); if !ours { p3(if outward(&url) { format!("open:{url}") } else { format!("blocked:{url}") }); } ours })
+            .with_new_window_req_handler(move |url, _f| { p4(if outward(&url) { format!("open:{url}") } else { format!("blocked:{url}") }); wry::NewWindowResponse::Deny })
             .build_as_child(window).map_err(|e| e.to_string())? };
-        let core = view.webview(); let env = view.environment();
-        // the network is shut BEFORE the page is asked for: no filter, no page
+        let core = view.webview();
         unsafe {
-            core.AddWebResourceRequestedFilter(PCWSTR(HSTRING::from("*").as_ptr()), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL).map_err(|e| format!("the network filter: {e}"))?;
-            let root = root.clone();
-            let handler = WebResourceRequestedEventHandler::create(Box::new(move |_, args| {
-                let Some(args) = args else { return Ok(()) };
-                let uri = { let mut u = PWSTR::null(); args.Request()?.Uri(&mut u)?; take_pwstr(u) };
-                let low = uri.to_ascii_lowercase();
-                if low.starts_with(&root) || low.starts_with("data:") || low.starts_with("blob:") || low.starts_with("about:") { return Ok(()) }
-                let resp = env.CreateWebResourceResponse(None, 403, &HSTRING::from("Blocked"), &HSTRING::new())?;
-                args.SetResponse(&resp)
-            }));
-            let mut token = Default::default();
-            core.add_WebResourceRequested(&handler, &mut token).map_err(|e| format!("the network filter: {e}"))?;
             let core3: ICoreWebView2_3 = core.cast().map_err(|e| format!("the folder mapping: {e}"))?;
             let (host, dir) = (HSTRING::from(HOST), HSTRING::from(folder.as_os_str()));
             core3.SetVirtualHostNameToFolderMapping(PCWSTR(host.as_ptr()), PCWSTR(dir.as_ptr()), COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS).map_err(|e| format!("the folder mapping: {e}"))?;

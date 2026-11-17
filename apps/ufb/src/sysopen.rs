@@ -46,3 +46,16 @@ pub fn open_as(path: &Path) {
     }
     #[cfg(not(windows))] { let _ = path; }
 }
+
+/// An address of the web (or a mail address) is handed to the system: its browser, its mail program.
+pub fn open_url(url: &str) {
+    #[cfg(target_os = "macos")] {
+        use objc2_foundation::{NSString, NSURL};
+        let _ = objc2::exception::catch(std::panic::AssertUnwindSafe(|| { if let Some(u) = NSURL::URLWithString(&NSString::from_str(url)) { objc2_app_kit::NSWorkspace::sharedWorkspace().openURL(&u); } }));
+    }
+    #[cfg(windows)] {
+        use windows::core::{w, HSTRING}; use windows::Win32::UI::Shell::ShellExecuteW; use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        unsafe { ShellExecuteW(None, w!("open"), &HSTRING::from(url), None, None, SW_SHOWNORMAL); }
+    }
+    #[cfg(not(any(target_os = "macos", windows)))] { let _ = url; }
+}

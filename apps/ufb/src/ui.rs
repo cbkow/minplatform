@@ -737,7 +737,9 @@ impl Ui {
         { let r = crate::tasks::rev(); if r != self.tasks_rev { self.tasks_rev = r; any = true; } }
         { let r = crate::mesh::rev(); if r != self.mesh_rev { self.mesh_rev = r; any = true; if self.list_mut().edit.is_none() && self.chip.is_none() && self.coledit.is_none() && !self.board.as_ref().is_some_and(|b| b.dragging()) { self.reload_lists(); } } }
         // what a page in the web view told: Escape pressed inside it closes the lightbox
-        for m in self.lightbox.web_msgs() { if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: the page: {m}"); } if m == "key:Escape" { self.close_lightbox(); break } }
+        for m in self.lightbox.web_msgs() { if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: the page: {m}"); } if m == "key:Escape" { self.close_lightbox(); break }
+            // a link to the web that was pressed in the page: the system's browser has it (rows 460, 512) - not in a scripted run
+            if let Some(url) = m.strip_prefix("open:") { if crate::webview::outward(url) && std::env::var_os("UFB_DEMO").is_none() { crate::sysopen::open_url(url); } } }
         // what a drag left for the loop: drops to carry out (the engine's work, as a paste is); a drag of ours that ended
         let (drops, ended) = { let mut d = self.dnd.borrow_mut(); (std::mem::take(&mut d.drops), std::mem::take(&mut d.ended)) };
         for d in drops { any = true; crate::ops::submit(self.id, crate::ops::Op::Transfer { paths: d.paths, dest: d.dest, mv: d.mv }); }
