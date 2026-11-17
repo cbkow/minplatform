@@ -70,6 +70,17 @@ fn key_name(event: &winit::event::KeyEvent) -> String {
     match &event.logical_key { Key::Character(c) => c.to_uppercase(), _ => String::new() }
 }
 
+#[cfg(target_os = "macos")] static DOCK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// The application is in the Dock (an ordinary one), or a menu-bar item alone (an accessory). Coming back it is
+/// brought forward: a window opened from the tray's menu is to be seen.
+#[cfg(target_os = "macos")]
+fn dock(on: bool) {
+    use objc2::runtime::AnyObject; use objc2::{class, msg_send};
+    unsafe { let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication]; if app.is_null() { return }
+        let _: bool = msg_send![app, setActivationPolicy: if on { 0isize } else { 1isize }];   // NSApplicationActivationPolicyRegular / Accessory
+        if on { let _: () = msg_send![app, activateIgnoringOtherApps: true]; } }
+    if std::env::var_os("UFB_CLOSE_AFTER").is_some() { eprintln!("UFB: in the Dock: {on}"); }
+}
 static CLOSE_NOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 impl App {
     /// What the drag-and-drop layer calls: it answers from what the window last drew (`dnd::on_notice`), asks for a
@@ -194,6 +205,9 @@ impl App {
         // (with the tray the application stays when its last window is closed: sync goes on - rows 445, 457)
         if done || (self.windows.is_empty() && self.tray.is_none()) { if let Some(w) = self.focused.and_then(|id| self.windows.get(&id)).or_else(|| self.windows.values().next()) { remember(&**w.window); } self.windows.clear(); el.exit(); }
         self.tray_refresh();
+        // macOS (row 525): in the Dock while a window is open; with only the tray left, out of it (and out of the
+        // application switcher) - 1.4.2 hid its Dock icon when it started hidden; a window opened again brings it back
+        #[cfg(target_os = "macos")] if self.tray.is_some() { let want = !self.windows.is_empty(); if DOCK.swap(want, std::sync::atomic::Ordering::Relaxed) != want { dock(want); } }
         #[cfg(target_os = "macos")] if let (Some(m), Some(w)) = (self.menu.as_mut(), self.focused.and_then(|id| self.windows.get(&id))) { m.sync(w.ui.menu_state()); m.set_undo(crate::ops::undo_label()); }
     }
     /// The drawn menu bar's keys (Windows' rules, as minNotes'): Alt alone, F10, Alt with a letter; while it is open, the arrows, Return, Escape and letters are its own.
