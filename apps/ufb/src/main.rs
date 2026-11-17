@@ -108,6 +108,9 @@ fn main() {
     // machine's name); `--mesh-only <folder>` keeps everything but that folder's rows out of it. A development build
     // runs at a TEST epoch (no installed UFB is of it) unless `UFB_MESH_EPOCH` says otherwise; `UFB_MESH_PORTS=c,d,u`.
     let arg = |name: &str| args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone());
+    // (`UFB_NO_SYNC=1`: the mesh's node is not started, whatever the settings say - a release build tried on a COPY of
+    // real data must not join the real mesh under the real machine's name)
+    if std::env::var_os("UFB_NO_SYNC").is_some() { eprintln!("UFB: sync is held off by UFB_NO_SYNC"); } else
     if let Some(farm) = arg("--mesh") { mesh::start_with(std::path::Path::new(&farm), &arg("--mesh-node").unwrap_or_default(), "", arg("--mesh-only").as_deref().map(std::path::Path::new)); }
     // ... else what the Sync entry of the sidebar saved (row 499)
     else { let (on, farm, node, leader, only) = settings::with(|s| (s.bool("sync/on"), s.string("sync/farm"), s.string("sync/node"), s.string("sync/leader"), s.string("sync/only")));

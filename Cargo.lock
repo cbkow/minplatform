@@ -6530,7 +6530,7 @@ dependencies = [
 
 [[package]]
 name = "ufb"
-version = "2.0.0-dev"
+version = "2.0.0"
 dependencies = [
  "arboard",
  "block2 0.6.2",
