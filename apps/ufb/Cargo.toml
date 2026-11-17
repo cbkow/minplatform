@@ -49,12 +49,15 @@ image = { version = "0.25", default-features = false, features = ["hdr"] }
 # the thumbnails' cache on disk, opened by the helpers (canon row 456, point 4)
 rusqlite = { workspace = true }
 
+# the menu library (macOS: the menu bar; both systems: the tray's menu) and the tray (row 505): this tray version shares
+# the menu library with the menu bar (minRender stays on its own, older pair)
+muda = { version = "0.21", default-features = false }
+tray-icon = { version = "0.26", default-features = false }
+
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-muda = { version = "0.21", default-features = false }
-tray-icon = { version = "0.26", default-features = false }   # the tray (row 505): this version shares muda with the menu bar (minRender stays on its own)
 objc2 = { workspace = true, features = ["exception"] }   # what AppKit throws inside a callback of ours is caught (the context menu)
 objc2-foundation = { workspace = true, features = ["NSString", "NSGeometry", "NSUserDefaults", "NSObject", "NSURL", "NSError"] }
 block2 = "0.6"
