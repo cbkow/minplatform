@@ -1,6 +1,7 @@
 //! Archives (canon row 508, points 5-9): Extract Here and Compress to ZIP, by our own code - no tool is bundled.
 //! Read: zip (deflate, stored; ZipCrypto and AES with a password), 7z (LZMA, LZMA2, BZip2, Deflate, PPMd; AES with a
 //! password), tar - plain or through gzip, bzip2, xz, zstd - and a single file compressed by one of those four.
+//! RAR, cab and iso go through the system's own archive tool (spike S20; a locked RAR is not opened by it).
 //! Written: ZIP alone (1.4.2).
 //!
 //! The rules, 1.4.2's where it had them:
@@ -24,12 +25,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub enum Wrap { None, Gz, Bz2, Xz, Zst }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format { Zip, SevenZ, Tar(Wrap), /// one file, compressed
-    Single(Wrap) }
+    Single(Wrap), /// RAR, cab, iso: through the system's own archive tool (spike S20)
+    System }
 
 /// The format by the name's end (letters' case apart), and the name without it (`shots.tar.gz` -> `shots`).
 pub fn format_of(name: &str) -> Option<(Format, String)> {
     let low = name.to_lowercase();
-    const ENDS: [(&str, Format); 16] = [(".tar.gz", Format::Tar(Wrap::Gz)), (".tgz", Format::Tar(Wrap::Gz)), (".tar.bz2", Format::Tar(Wrap::Bz2)), (".tbz2", Format::Tar(Wrap::Bz2)), (".tbz", Format::Tar(Wrap::Bz2)), (".tar.xz", Format::Tar(Wrap::Xz)), (".txz", Format::Tar(Wrap::Xz)),
+    const ENDS: [(&str, Format); 19] = [(".rar", Format::System), (".cab", Format::System), (".iso", Format::System), (".tar.gz", Format::Tar(Wrap::Gz)), (".tgz", Format::Tar(Wrap::Gz)), (".tar.bz2", Format::Tar(Wrap::Bz2)), (".tbz2", Format::Tar(Wrap::Bz2)), (".tbz", Format::Tar(Wrap::Bz2)), (".tar.xz", Format::Tar(Wrap::Xz)), (".txz", Format::Tar(Wrap::Xz)),
         (".tar.zst", Format::Tar(Wrap::Zst)), (".tzst", Format::Tar(Wrap::Zst)), (".tar", Format::Tar(Wrap::None)), (".zip", Format::Zip), (".7z", Format::SevenZ), (".gz", Format::Single(Wrap::Gz)), (".bz2", Format::Single(Wrap::Bz2)), (".xz", Format::Single(Wrap::Xz)), (".zst", Format::Single(Wrap::Zst))];
     ENDS.iter().find(|(end, _)| low.ends_with(end) && low.len() > end.len()).map(|(end, f)| (*f, name[..name.len() - end.len()].to_string()))
 }
@@ -111,7 +113,7 @@ pub fn extract(archive: &Path, password: Option<&str>, cancel: &AtomicBool, say:
     if root.exists() { std::fs::remove_dir_all(&root)?; }
     std::fs::create_dir(&root)?;
     let mut sink = Sink { root: root.clone(), cancel, say, done: 0, total: 0, pos: None, tops: BTreeSet::new(), skipped: 0, said: Instant::now() - Duration::from_secs(1) };
-    let r = match format { Format::Zip => unzip(archive, password, &mut sink), Format::SevenZ => un7z(archive, password, &mut sink), Format::Tar(w) => untar(archive, w, &mut sink), Format::Single(w) => unsingle(archive, w, &stem, &mut sink) };
+    let r = match format { Format::Zip => unzip(archive, password, &mut sink), Format::SevenZ => un7z(archive, password, &mut sink), Format::Tar(w) => untar(archive, w, &mut sink), Format::Single(w) => unsingle(archive, w, &stem, &mut sink), Format::System => unsystem(archive, &mut sink) };
     if let Err(e) = r { let _ = std::fs::remove_dir_all(&root); return Err(if cancel.load(Ordering::Relaxed) { Fail::Stopped } else { e }) }
     // its place: a single top entry whose name is free goes straight beside the archive; anything else into a new folder
     let made = (|| -> std::io::Result<PathBuf> {
@@ -162,6 +164,36 @@ fn unsingle(archive: &Path, wrap: Wrap, stem: &str, sink: &mut Sink) -> Result<(
     sink.pos = Some((at.clone(), of));
     let mut r = unwrapped(wrap, Counting { inner: BufReader::new(file), at })?;
     sink.file(stem, &mut r, None, None)
+}
+
+/// The system's own archive tool (libarchive's `bsdtar`: `/usr/bin/bsdtar` on macOS, `tar.exe` of Windows 10 1803 and
+/// later), as a child: it lists the archive, then unpacks it into our folder - it refuses absolute paths and `..` by
+/// itself. A stop ends the child. A locked RAR is not opened by it (S20): said as such.
+fn system_tool() -> Option<PathBuf> {
+    #[cfg(windows)] let p = PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32").join("tar.exe");
+    #[cfg(not(windows))] let p = PathBuf::from("/usr/bin/bsdtar");
+    p.is_file().then_some(p)
+}
+fn unsystem(archive: &Path, sink: &mut Sink) -> Result<(), Fail> {
+    use std::io::BufRead; use std::process::{Command, Stdio};
+    let tool = system_tool().ok_or_else(|| Fail::Other("This system has no tool that reads this kind of archive.".into()))?;
+    let quiet = |c: &mut Command| { #[cfg(windows)] { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); } let _ = c; };
+    let mut list = Command::new(&tool); list.arg("-tf").arg(archive).stdin(Stdio::null()).stderr(Stdio::null()); quiet(&mut list);
+    let count = list.output().map(|o| o.stdout.iter().filter(|b| **b == b'\n').count()).unwrap_or(0);
+    let mut x = Command::new(&tool); x.arg("-xvf").arg(archive).arg("-C").arg(&sink.root).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()); quiet(&mut x);
+    let mut child = x.spawn()?; let err = child.stderr.take().ok_or_else(|| Fail::Other("The system's tool could not be started.".into()))?;
+    // (its lines are the entries as they are unpacked - `x name`; what is no such line is what it complains of)
+    let (mut seen, mut said) = (0usize, String::new());
+    for line in BufReader::new(err).split(b'\n').flatten() {
+        if sink.cancel.load(Ordering::Relaxed) { let _ = child.kill(); let _ = child.wait(); return Err(Fail::Stopped) }
+        let line = String::from_utf8_lossy(&line).trim().to_string();
+        match line.strip_prefix("x ") { Some(name) => { seen += 1; let short = name.rsplit(['/', '\\']).find(|p| !p.is_empty()).unwrap_or(name).to_string(); if sink.said.elapsed() >= Duration::from_millis(120) { sink.said = Instant::now(); (sink.say)((count > 0).then(|| (seen as f64 / count as f64).min(1.0)), &short); } } None => if !line.is_empty() && said.is_empty() { said = line } }
+    }
+    let ok = child.wait()?.success();
+    if sink.cancel.load(Ordering::Relaxed) { return Err(Fail::Stopped) }
+    if !ok { return Err(Fail::Other(format!("The system's archive tool could not unpack it{} A RAR locked with a password is not opened by it.", if said.is_empty() { ".".to_string() } else { format!(" ({said}).") }))) }
+    for e in std::fs::read_dir(&sink.root)?.flatten() { sink.tops.insert(e.file_name().to_string_lossy().into_owned()); }
+    Ok(())
 }
 
 fn un7z(archive: &Path, password: Option<&str>, sink: &mut Sink) -> Result<(), Fail> {
@@ -245,7 +277,7 @@ mod tests {
     fn the_formats_by_their_names() {
         assert_eq!(format_of("Shots.TAR.GZ"), Some((Format::Tar(Wrap::Gz), "Shots".into()))); assert_eq!(format_of("a.b.zip"), Some((Format::Zip, "a.b".into()))); assert_eq!(format_of("x.7z").map(|f| f.0), Some(Format::SevenZ));
         assert_eq!(format_of("log.txt.gz"), Some((Format::Single(Wrap::Gz), "log.txt".into()))); assert_eq!(format_of("x.tzst").map(|f| f.0), Some(Format::Tar(Wrap::Zst)));
-        assert!(format_of(".zip").is_none() && format_of("plate.exr").is_none() && format_of("x.rar").is_none());
+        assert!(format_of(".zip").is_none() && format_of("plate.exr").is_none()); assert_eq!(format_of("x.part01.RAR"), Some((Format::System, "x.part01".into())));
     }
     #[test]
     fn a_zip_is_made_and_unpacked_and_nothing_is_overwritten() {
