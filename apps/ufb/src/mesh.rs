@@ -127,6 +127,8 @@ pub fn node_name(given: &str) -> String {
 /// the TEST epoch and on the TEST ports unless `UFB_MESH_EPOCH` / `UFB_MESH_PORTS=c,d,u` say otherwise. `leader`:
 /// "" | "leader" | "noleader"; `only`: a folder - nothing but its rows takes part.
 pub fn start_with(farm: &std::path::Path, node: &str, leader: &str, only: Option<&std::path::Path>) {
+    // (sync held to one folder is the development build's belt alone, row 494)
+    let only = if crate::identity::belt() { only } else { None };
     let ports: Vec<u16> = std::env::var("UFB_MESH_PORTS").ok().map(|p| p.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
     let mut tags: Vec<String> = std::env::var("UFB_MESH_TAGS").ok().map(|t| t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
     if !leader.is_empty() && !tags.iter().any(|t| t == leader) { tags.push(leader.to_string()); }

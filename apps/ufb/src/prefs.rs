@@ -69,6 +69,7 @@ impl Prefs {
     /// Save: the settings are written, or what is wrong is said and nothing is.
     fn commit(&mut self) -> Out {
         let (farm, node, only) = (self.farm.text().trim().to_string(), self.node.text().trim().to_string(), self.only.text().trim().to_string());
+        let only = if crate::identity::belt() { only } else { String::new() };
         if self.sync.on && (farm.is_empty() || !std::path::Path::new(&farm).is_dir()) { self.tab = 1; }
         if self.sync.on && farm.is_empty() { self.error = Some("Sync needs the farm's folder: the one every machine shares.".into()); return Out::None }
         if self.sync.on && !std::path::Path::new(&farm).is_dir() { self.error = Some("The farm's folder is not there.".into()); return Out::None }
@@ -180,12 +181,13 @@ impl Prefs {
         line(scene, fonts, "Sync", ox0, y + head / 2.0, t::DETAIL_SIZE_M, true, sub, 200.0 * s); y += head;
         panel(scene, y, y + row + 12.0 * s); y += 6.0 * s;
         toggle(scene, fonts, "Sync metadata with the other machines", &mut self.sync, &format!("now: {}", crate::ui::Ui::sync_words()), &mut y);
-        y += 6.0 * s + 10.0 * s; panel(scene, y, y + 3.0 * (row + 4.0 * s) + 12.0 * s); y += 8.0 * s;
+        y += 6.0 * s + 10.0 * s; panel(scene, y, y + if crate::identity::belt() { 3.0 } else { 2.0 } * (row + 4.0 * s) + 12.0 * s); y += 8.0 * s;
         let dim = if self.sync.on { ink } else { sub };
         line(scene, fonts, "Farm folder", lx, y + fh / 2.0, t::BODY_SIZE_S, false, dim, 180.0 * s); let bw = self.browse.measure(fonts, s).0;
         self.farm.layout(fonts, Rect::new(fx, y, x1 - bw - 8.0 * s, y + fh), s); self.farm.paint(scene, fonts, s); self.browse.rect = Rect::new(x1 - bw, y + 3.0 * s, x1, y + fh - 3.0 * s); self.browse.paint(scene, fonts, s, now); y += row + 4.0 * s;
         line(scene, fonts, "This machine's name", lx, y + fh / 2.0, t::BODY_SIZE_S, false, dim, 180.0 * s); self.node.layout(fonts, Rect::new(fx, y, x1, y + fh), s); self.node.paint(scene, fonts, s); y += row + 4.0 * s;
-        line(scene, fonts, "Only under (test build)", lx, y + fh / 2.0, t::BODY_SIZE_S, false, dim, 180.0 * s); self.only.layout(fonts, Rect::new(fx, y, x1, y + fh), s); self.only.paint(scene, fonts, s); y += row + 4.0 * s;
+        // (the development build's belt for sync - row 494: not a setting of the test package or of the release)
+        if crate::identity::belt() { line(scene, fonts, "Only under (development build)", lx, y + fh / 2.0, t::BODY_SIZE_S, false, dim, 220.0 * s); self.only.layout(fonts, Rect::new(fx, y, x1, y + fh), s); self.only.paint(scene, fonts, s); y += row + 4.0 * s; }
         y += 8.0 * s; line(scene, fonts, "The farm's folder is the one every machine shares; each machine has a name of its own in it.", ox0, y + 10.0 * s, t::DETAIL_SIZE_S, false, sub, w - 2.0 * pad); y += 20.0 * s;
         }
         if self.tab == 2 {

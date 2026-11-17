@@ -82,7 +82,14 @@ impl App {
             let c8 = |c: min_theme::Color| winit::platform::windows::Color::from_rgb((c.r * 255.0).round() as u8, (c.g * 255.0).round() as u8, (c.b * 255.0).round() as u8);
             attrs = attrs.with_theme(Some(winit::window::Theme::Dark));
             // (winit's own drag and drop is OFF: a window has one drop target, and it is ours - `min-dnd`)
-            attrs = attrs.with_platform_attributes(Box::new(WindowAttributesWindows::default().with_drag_and_drop(false).with_title_background_color(Some(c8(tk::MENU_BAR_BACKGROUND_COLOR))).with_title_text_color(c8(tk::MENU_BAR_TITLE_COLOR))));
+            // Windows' two icons, as the family's (rows 248, 372): the title bar's small one from the picture, the taskbar's and
+            // Alt+Tab's the exe's own resource (build.rs, id 1) - 1.4.2's icon both
+            let small = (|| { let mut d = png::Decoder::new(std::io::Cursor::new(&include_bytes!("../assets/icons/ufb-windows-64.png")[..])); d.set_transformations(png::Transformations::EXPAND | png::Transformations::ALPHA | png::Transformations::STRIP_16);
+                let mut rd = d.read_info().ok()?; let mut buf = vec![0u8; rd.output_buffer_size()]; let info = rd.next_frame(&mut buf).ok()?; buf.truncate(info.buffer_size());
+                if info.color_type != png::ColorType::Rgba { return None } winit::icon::RgbaIcon::new(buf, info.width, info.height).ok().map(winit::icon::Icon::from) })();
+            attrs = attrs.with_window_icon(small);
+            let big = winit::platform::windows::WinIcon::from_resource(1, None).ok().map(winit::icon::Icon::from);
+            attrs = attrs.with_platform_attributes(Box::new(WindowAttributesWindows::default().with_taskbar_icon(big).with_drag_and_drop(false).with_title_background_color(Some(c8(tk::MENU_BAR_BACKGROUND_COLOR))).with_title_text_color(c8(tk::MENU_BAR_TITLE_COLOR))));
             attrs = attrs.with_visible(false);
         }
         let Ok(window) = el.create_window(attrs) else { eprintln!("UFB: no window could be made"); return }; let window: Arc<Box<dyn Window>> = Arc::new(window);

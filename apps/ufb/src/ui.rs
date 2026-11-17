@@ -568,8 +568,10 @@ impl Ui {
     fn ask_sync(&mut self) {
         use min_ui::{dialog::Dialog, text_button::Variant}; let (farm, node, only) = crate::settings::with(|s| (s.string("sync/farm"), s.string("sync/node"), s.string("sync/only")));
         let mut d = Dialog::new("Sync", "The farm's folder is the one every machine shares; each machine has a name of its own in it. Saving turns sync on.", vec![("Cancel", Variant::Secondary), ("Save", Variant::Primary)])
-            .with_field("Farm folder", "a folder on shared storage").with_field("This machine's name", &crate::mesh::node_name("")).with_field("Only under (this test build's belt)", "a folder; empty: everything shared");
-        d.show_with(&farm, &mut self.fonts); d.fields[1].1.set_text_end(&node, &mut self.fonts); d.fields[2].1.set_text_end(&only, &mut self.fonts); self.dialog = Some((d, Asked::SyncSet));
+            .with_field("Farm folder", "a folder on shared storage").with_field("This machine's name", &crate::mesh::node_name(""));
+        // (the development build's belt for sync: not a setting of the test package or of the release)
+        let belt = crate::identity::belt(); if belt { d = d.with_field("Only under (development build)", "a folder; empty: everything shared"); }
+        d.show_with(&farm, &mut self.fonts); d.fields[1].1.set_text_end(&node, &mut self.fonts); if belt { d.fields[2].1.set_text_end(&only, &mut self.fonts); } self.dialog = Some((d, Asked::SyncSet));
     }
     /// The Settings card (row 516): opened over the window; Save applies what it holds to this window's panes and, when
     /// sync's settings changed, starts sync again.
@@ -1140,7 +1142,7 @@ impl Ui {
             // (through the engine, as every change to the disk: one at a time, behind the belt, and undone by Undo)
             Asked::NewJob(parent) => if button == 1 { crate::ops::submit(self.id, crate::ops::Op::NewJob { parent, number: d.value_at(0), name: d.value_at(1) }); },
             Asked::AddItem(dir) => if button == 1 { crate::ops::submit(self.id, crate::ops::Op::AddItem { dir, name: d.value_at(0) }); },
-            Asked::SyncSet => if button == 1 { let (farm, node, only) = (d.value_at(0), d.value_at(1), d.value_at(2)); crate::settings::with(|s| { s.set_str("sync/farm", &farm); s.set_str("sync/node", &node); s.set_str("sync/only", &only); s.set_bool("sync/on", true); }); self.apply_sync(); },
+            Asked::SyncSet => if button == 1 { let (farm, node, only) = (d.value_at(0), d.value_at(1), if crate::identity::belt() { d.value_at(2) } else { String::new() }); crate::settings::with(|s| { s.set_str("sync/farm", &farm); s.set_str("sync/node", &node); s.set_str("sync/only", &only); s.set_bool("sync/on", true); }); self.apply_sync(); },
             Asked::ShareLetter(i) => if button == 1 { match crate::shares::letter_of(&d.value_at(0)) { Some(l) => if let Some(sh) = self.shares.get_mut(i) { sh.letter = l; crate::shares::save(&self.shares); }, None => self.toast.show("A drive letter is one letter, A to Z.", min_ui::toast::ToastKind::Notice, Instant::now()) } },
             Asked::AddShare => if button == 1 { let text = d.value_at(0); self.add_share(&text); },
             Asked::RenameShare(i) => if button == 1 { let name = d.value_at(0); if let Some(sh) = self.shares.get_mut(i).filter(|_| !name.is_empty()) { sh.name = name; crate::shares::save(&self.shares); } },
