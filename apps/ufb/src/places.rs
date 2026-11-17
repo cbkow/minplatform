@@ -54,3 +54,17 @@ mod tests {
     #[test]
     fn there_is_always_a_volume() { let (v, _root) = volumes(); assert!(!v.is_empty()); #[cfg(unix)] assert!(v.iter().any(|p| p.path == std::path::Path::new("/"))); }
 }
+
+/// The favourites the user made (canon row 531): kept in the settings as each folder's identity, so one on a share
+/// is the same favourite wherever the share lands. One that leads nowhere on this machine now (its share is not
+/// mapped here) is kept, and not shown.
+pub fn saved() -> Vec<Place> {
+    let text = crate::settings::with(|s| s.string("favorites/list"));
+    serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v.as_array().map(|a| a.iter().filter_map(|f| { let path = crate::db::to_native(f["path"].as_str()?)?; let label = f["label"].as_str().filter(|l| !l.is_empty()).map(str::to_string).unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string_lossy().into_owned())); Some(Place { label, path, icon: "star" }) }).collect())).unwrap_or_default()
+}
+fn stored() -> Vec<(String, String)> { let text = crate::settings::with(|s| s.string("favorites/list")); serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v.as_array().map(|a| a.iter().filter_map(|f| Some((f["label"].as_str().unwrap_or("").to_string(), f["path"].as_str()?.to_string()))).collect())).unwrap_or_default() }
+fn store(list: &[(String, String)]) { let text = serde_json::Value::Array(list.iter().map(|(l, p)| serde_json::json!({ "label": l, "path": p })).collect()).to_string(); crate::settings::with(|s| s.set_str("favorites/list", &text)); }
+/// A folder becomes a favourite (once), under the name given or its own. True: it was added.
+pub fn add_favorite(path: &std::path::Path, label: &str) -> bool { let id = crate::db::to_identity(path); let mut l = stored(); if l.iter().any(|f| f.1 == id) { return false } l.push((label.to_string(), id)); store(&l); true }
+pub fn remove_favorite(path: &std::path::Path) -> bool { let id = crate::db::to_identity(path); let mut l = stored(); let n = l.len(); l.retain(|f| f.1 != id); if l.len() != n { store(&l); true } else { false } }
+pub fn is_favorite(path: &std::path::Path) -> bool { let id = crate::db::to_identity(path); stored().iter().any(|f| f.1 == id) }

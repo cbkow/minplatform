@@ -110,7 +110,8 @@ pub struct Ui {
     /// the chips (row 490): the popover that picks a dropdown cell's value; a column's editor (a question of its own, over everything)
     chip: Option<crate::chips::ChipPicker>, coledit: Option<crate::chips::ColumnEditor>, /// the Settings card (row 516)
     prefs: Option<crate::prefs::Prefs>, /// a notes or links cell being written in its own small editor (row 529)
-    note: Option<NoteEdit>, /// what the rows of the tracker's menu for several would set: (the column in view, the value)
+    note: Option<NoteEdit>, /// the favourites the build was started with (`--favorite`, `--jobs`): the user's own come after them
+    started_favorites: Vec<Place>, /// what the rows of the tracker's menu for several would set: (the column in view, the value)
     bulk: Vec<(usize, serde_json::Value)>,
     /// the tracker the tab in front shows, if it shows one (row 491): a job's (beside its sections), or All Tracked;
     /// its button in a job's bar, the Due chips, its last press (two on one row open the item)
@@ -183,6 +184,8 @@ fn icon_button(icon: &'static str, tip: String) -> ActionButton { ActionButton::
 
 impl Ui {
     pub fn new(window: Arc<Box<dyn Window>>, port: Port, rx: Receiver<Msg>, path: PathBuf, favorites: Vec<Place>) -> Option<Ui> {
+        // (the favourites: those the build was started with, then those the user made - row 531)
+        let started = favorites.clone(); let mut favorites = favorites; for p in crate::places::saved() { if !favorites.iter().any(|x| x.path == p.path) { favorites.push(p); } }
         let instance = Presenter::instance(); let surface = instance.create_surface(window.clone()).ok()?; let size = window.surface_size();
         #[cfg(target_os = "macos")] let view = { use raw_window_handle::{HasWindowHandle, RawWindowHandle}; match window.window_handle().ok()?.as_raw() { RawWindowHandle::AppKit(h) => Some(h.ns_view.as_ptr()), _ => None } };
         #[cfg(not(target_os = "macos"))] let view = None;
@@ -203,7 +206,7 @@ impl Ui {
         Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
             panes: vec![pane], active: 0, two: false, split: crate::settings::with(|s| s.float("window/split")), pane_heads: [Rect::ZERO; 2], tabs: vec![Tab::default()], tab: 0, tab_rects: vec![], tab_close: vec![], tab_new: icon_button("plus", key(Cmd::NewTab, "New tab")).size_s(),
             job: None, jobs: crate::db::with(|d| d.subscriptions()).unwrap_or_default(), job_secs: vec![], job_secs_for: vec![], job_refresh: icon_button("arrow-clockwise", key(Cmd::Refresh, "Read the job again")).size_s(), job_add: { let mut b = ActionButton::new("plus", "").size_s(); b.label = Some("Add".into()); b },
-            job_list: Rect::ZERO, panes_x0: 0.0, chip: None, coledit: None, prefs: None, note: None, bulk: vec![], board: None, board_of: Default::default(), board_btn: { let mut b = ActionButton::new("kanban", "Show the items as a board, or as the list").size_s(); b.label = Some("Board".into()); b }, board_ctx: vec![], tracker: None, trk_btn: { let mut b = ActionButton::new("list-checks", "The job's tracked items").size_s(); b.label = Some("Tracker".into()); b }, due_btns: crate::tracker::DUES.iter().map(|(_, label)| { let mut b = ActionButton::new("", "").size_s(); b.label = Some(label.to_string()); b }).collect(), trk_press: None, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, share_states: vec![crate::shares::State::NotConnected; shares.len()], shares, share_busy: Default::default(), share_tx, share_rx, share_btns: vec![], share_add: ActionButton::new("plus", "Add a share: its address, or a folder").size_s(), share_menu: None, shares_launched: false, share_holders: Default::default(), share_seen: Default::default(), sync_rect: Rect::ZERO, menu_paths: vec![], mesh_rev, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: view.0, folders_first: view.1,
+            job_list: Rect::ZERO, panes_x0: 0.0, chip: None, coledit: None, prefs: None, note: None, started_favorites: started, bulk: vec![], board: None, board_of: Default::default(), board_btn: { let mut b = ActionButton::new("kanban", "Show the items as a board, or as the list").size_s(); b.label = Some("Board".into()); b }, board_ctx: vec![], tracker: None, trk_btn: { let mut b = ActionButton::new("list-checks", "The job's tracked items").size_s(); b.label = Some("Tracker".into()); b }, due_btns: crate::tracker::DUES.iter().map(|(_, label)| { let mut b = ActionButton::new("", "").size_s(); b.label = Some(label.to_string()); b }).collect(), trk_press: None, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, share_states: vec![crate::shares::State::NotConnected; shares.len()], shares, share_busy: Default::default(), share_tx, share_rx, share_btns: vec![], share_add: ActionButton::new("plus", "Add a share: its address, or a folder").size_s(), share_menu: None, shares_launched: false, share_holders: Default::default(), share_seen: Default::default(), sync_rect: Rect::ZERO, menu_paths: vec![], mesh_rev, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: view.0, folders_first: view.1,
             side_w: { let w = crate::settings::with(|s| s.float("window/sidebar")); if w > 0.0 { w.clamp(SIDE_MIN, SIDE_MAX) } else { t::RAIL_WIDTH_MIN as f64 } }, side_rect: Rect::ZERO, sections: [Section::new("Favorites", true), Section::new("Shares", true), Section::new("Jobs", true), Section::new("Places", true)], favorites, fixed: places::fixed(), volumes: vec![], root: String::new(), side_bar: ScrollBar::default(), side_rows: vec![], side_hover: None,
             back: icon_button("arrow-left", key(Cmd::Back, "Back")), forward: icon_button("arrow-right", key(Cmd::Forward, "Forward")), up: icon_button("arrow-up", key(Cmd::Up, "Enclosing folder")),
             list_btn: icon_button("list", key(Cmd::AsList, "List")), grid_btn: icon_button("squares-four", key(Cmd::AsGrid, "Grid")), pane2_btn: icon_button("columns", "Second pane  (Tab switches panes)".to_string()), size: Slider::new(((96.0 - grid::TILE_MIN) / (grid::TILE_MAX - grid::TILE_MIN)) as f32), search,
@@ -1185,6 +1188,8 @@ impl Ui {
         let (Some(dir), Some(name)) = (path.parent().map(Path::to_path_buf), path.file_name().map(|n| n.to_string_lossy().into_owned())) else { return };
         let port = self.port.clone(); self.search.clear(); self.pane().go_select(&port, dir, name);
     }
+    /// The sidebar's favourites: those the build was started with, then those the user made (row 531).
+    fn reload_favorites(&mut self) { let mut f = self.started_favorites.clone(); for p in crate::places::saved() { if !f.iter().any(|x| x.path == p.path) { f.push(p); } } self.favorites = f; }
     /// Transcode to MP4 for the chosen videos and sequences (rows 508 points 10-12, 513): a task of the lane each.
     fn transcode_chosen(&mut self) {
         let Some(sources) = self.pane().chosen_media() else { return };
@@ -1421,7 +1426,10 @@ impl Ui {
         let ask = if entries.is_empty() { self.menu_for = Some((Some(i), here.clone())); Ask { at, paths: vec![here], rows: ctxmenu::rows_for_folder() } }
             else { let kinds: Vec<(bool, bool)> = entries.iter().map(|e| (e.1, e.2)).collect(); let folder = if entries.len() == 1 && (entries[0].1 || entries[0].2) { entries[0].0.clone() } else { here };
                 // one folder: it can be made a job of the sidebar, or taken out of it
-                let mut rows = ctxmenu::rows_for(&kinds, sequence); if kinds.len() == 1 && kinds[0].0 && !kinds[0].1 { let on = self.jobs.iter().any(|j| j.path == folder); if let Some(k) = rows.iter().position(|r| *r == ctxmenu::Row::Sep) { rows.insert(k, ctxmenu::row_subscribe(on)); } }
+                let mut rows = ctxmenu::rows_for(&kinds, sequence);
+                // one folder: it can be made a favourite of the sidebar (row 531)
+                if kinds.len() == 1 && kinds[0].0 && !kinds[0].1 && !crate::places::is_favorite(&folder) { if let Some(k) = rows.iter().position(|r| *r == ctxmenu::Row::Sep) { rows.insert(k, ctxmenu::named(ctxmenu::FAV_ADD, "Add to Favorites".to_string())); } }
+                if kinds.len() == 1 && kinds[0].0 && !kinds[0].1 { let on = self.jobs.iter().any(|j| j.path == folder); if let Some(k) = rows.iter().position(|r| *r == ctxmenu::Row::Sep) { rows.insert(k, ctxmenu::row_subscribe(on)); } }
                 // archives (row 508): what is chosen is compressed; chosen archives are unpacked where they lie
                 { let n = entries.len(); let archives = entries.iter().all(|e| !e.1 && e.0.file_name().is_some_and(|f| crate::archive::is_archive(&f.to_string_lossy())));
                     let mut add = vec![ctxmenu::Row::Sep]; if archives { add.push(ctxmenu::named(ctxmenu::EXTRACT, if n == 1 { "Extract Here".to_string() } else { format!("Extract {n} Archives Here") })); }
@@ -1494,6 +1502,8 @@ impl Ui {
             id if (SORT..SORT + 4).contains(&id) => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.command(Cmd::Sort((id - SORT) as u8)); }
             NEW_WINDOW => self.out.push(Out::NewWindow(folder)),
             crate::ctxmenu::EXTRACT | crate::ctxmenu::COMPRESS | crate::ctxmenu::TRANSCODE => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; match id { crate::ctxmenu::EXTRACT => self.extract_chosen(), crate::ctxmenu::COMPRESS => self.compress_chosen(), _ => self.transcode_chosen() } },
+            crate::ctxmenu::FAV_ADD => { if crate::places::add_favorite(&folder, "") { self.reload_favorites(); } }
+            crate::ctxmenu::FAV_REMOVE => { if crate::places::remove_favorite(&folder) { self.reload_favorites(); } }
             crate::ctxmenu::ENCLOSING => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; self.show_enclosing(); },
             SPLIT => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.panes[i].split_chosen(); },
             GROUP => if let Some(i) = pane.filter(|i| *i < self.shown()) { if !self.panes[i].group_chosen() { self.toast.show("These cannot be one sequence: their names differ in more than a number.", min_ui::toast::ToastKind::Notice, Instant::now()); } },
@@ -1626,7 +1636,9 @@ impl Ui {
         // ... and its menu: a place opens here or in a new window (row 448)
         if let Event::Down { x, y, button: Button::Secondary } = *e { if let Some(to) = self.folder_at(x, y, false).filter(|_| self.side_rect.contains(kurbo::Point::new(x, y))) {
             let job = self.side_rows.iter().any(|r| r.job && r.path.as_deref() == Some(to.as_path()));
-            self.menu_for = Some((None, to.clone())); self.menu_job = job; self.show_menu(crate::ctxmenu::Ask { at: (x, y), paths: vec![to], rows: if job { crate::ctxmenu::rows_for_job() } else { crate::ctxmenu::rows_for_place() } }); } }
+            // (a favourite the user made can be taken out of the sidebar again - row 531)
+            let mut rows = if job { crate::ctxmenu::rows_for_job() } else { crate::ctxmenu::rows_for_place() }; if !job && crate::places::is_favorite(&to) { rows.push(crate::ctxmenu::Row::Sep); rows.push(crate::ctxmenu::named(crate::ctxmenu::FAV_REMOVE, "Remove from Favorites".to_string())); }
+            self.menu_for = Some((None, to.clone())); self.menu_job = job; self.show_menu(crate::ctxmenu::Ask { at: (x, y), paths: vec![to], rows }); } }
         // the job: its sections, its refresh, the item list (a press chooses an item and takes the arrow keys; the
         // secondary button gives the item's menu), Add
         if self.job.is_some() {
@@ -1971,6 +1983,8 @@ impl Ui {
             // `batchrename:<find>|<replace with>` (the chosen entries, as Rename with several chosen; it is carried out when it may be)
             "batchrename" => { self.ask_batch_rename(); let (f, w) = arg.split_once('|').unwrap_or((arg, "")); if let Some((d, Asked::BatchRename(_))) = self.dialog.as_mut() { d.fields[0].1.set_text(f); d.fields[1].1.set_text(w); } self.dialog_preview();
                 if let Some((d, _)) = self.dialog.as_ref() { eprintln!("UFB_DEMO: batch rename: {}", d.body); } if self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } else { self.dialog = None; } },
+            "favadd" => { if crate::places::add_favorite(Path::new(arg), "") { self.reload_favorites(); } }, "favremove" => { if crate::places::remove_favorite(Path::new(arg)) { self.reload_favorites(); } },
+            "favsay" => eprintln!("UFB_DEMO: favorites: {}", self.favorites.iter().map(|f| f.label.clone()).collect::<Vec<_>>().join(", ")),
             "extract" => self.extract_chosen(), "compress" => self.compress_chosen(), "transcode" => self.transcode_chosen(),
             "password" => if matches!(self.dialog, Some((_, Asked::Password(_)))) { if let Some((d, _)) = self.dialog.as_mut() { d.paste(arg, &mut self.fonts); } self.answer(1); },   // (as pasted: the field hides its text and takes none set from outside)
             "all" => if let Some((d, _)) = self.dialog.as_mut() { if let Some(c) = d.check.as_mut() { c.1 = true; } },

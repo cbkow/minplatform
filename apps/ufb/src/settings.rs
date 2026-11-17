@@ -30,6 +30,8 @@ static SCHEMA: Schema = Schema { keys: &[
     // the width of a job's item list
     Key::str("window/size", ""), Key::bool("window/maximized", false),
     Key::float("window/sidebar", 0.0, 0.0, 4000.0), Key::float("window/split", 0.5, 0.15, 0.85), Key::float("window/job_split", 0.5, 0.15, 0.85), Key::float("window/job_list", 0.0, 0.0, 4000.0),
+    // the favourites the user made (row 531): a list, as JSON - each a label and the folder as the others would read it
+    Key::str("favorites/list", ""),
     // path mappings that are no saved share's (row 517): a list, as JSON - a name, the Windows side, the macOS side, on or off
     Key::str("mappings/list", ""),
     Key::str("columns/browser", "1,1,1|150,86,150"), Key::str("columns/job_top", "1,0,0|150,86,150"), Key::str("columns/job_low", "1,0,0|150,86,150"),
