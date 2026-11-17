@@ -120,7 +120,10 @@ impl Job {
 /// bookmarks and saved shares flagged so): a folder directly inside one can be made a job by New Job.
 static ROOTS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
 pub fn set_roots(roots: Vec<PathBuf>) { let _ = ROOTS.set(roots); }
-pub fn is_jobs_folder(dir: &Path) -> bool { ROOTS.get().is_some_and(|r| r.iter().any(|j| j == dir)) }
+/// ... and the saved shares marked as jobs folders, where each is now (`shares.rs`).
+static SHARE_ROOTS: std::sync::RwLock<Vec<PathBuf>> = std::sync::RwLock::new(Vec::new());
+pub fn set_share_roots(roots: Vec<PathBuf>) { *SHARE_ROOTS.write().unwrap() = roots; }
+pub fn is_jobs_folder(dir: &Path) -> bool { ROOTS.get().is_some_and(|r| r.iter().any(|j| j == dir)) || SHARE_ROOTS.read().unwrap().iter().any(|j| j == dir) }
 
 /// The project type of every job, for now: the built-in one (a jobs folder's own type comes with its step, row 454).
 pub fn project_type() -> &'static ufb_projtype::ProjectType { static T: std::sync::OnceLock<ufb_projtype::ProjectType> = std::sync::OnceLock::new(); T.get_or_init(ufb_projtype::ProjectType::builtin) }

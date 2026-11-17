@@ -67,6 +67,11 @@ fn new_id() -> String { uuid::Uuid::new_v4().simple().to_string()[..12].to_strin
 pub fn decode(s: &str) -> String { let b = s.as_bytes(); let (mut out, mut i) = (Vec::with_capacity(b.len()), 0); while i < b.len() { if b[i] == b'%' && i + 3 <= b.len() { if let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) { out.push(v); i += 3; continue } } out.push(b[i]); i += 1; } String::from_utf8_lossy(&out).into_owned() }
 fn encode(s: &str) -> String { s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect() }
 
+/// The shares the build was started with (`--map <windows side>=<macOS side>`): mappings with nothing to connect.
+static STARTED_WITH: std::sync::RwLock<Vec<Mapping>> = std::sync::RwLock::new(Vec::new());
+pub fn set_started_with(m: Vec<Mapping>) { *STARTED_WITH.write().unwrap() = m; }
+pub fn started_with() -> Vec<Mapping> { STARTED_WITH.read().unwrap().clone() }
+
 // ---------------------------------------------------------------- kept in the settings
 fn to_json(s: &Share) -> Value { json!({ "id": s.id, "name": s.name, "server": s.server, "share": s.share, "local": s.local, "jobs": s.jobs, "atLaunch": s.at_launch, "letter": s.letter, "win": s.win, "mac": s.mac, "ours": s.ours }) }
 fn from_json(v: &Value) -> Option<Share> { let t = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string(); let b = |k: &str| v.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
@@ -122,16 +127,17 @@ pub fn mappings_of(shares: &[Share], states: &[State]) -> Vec<Mapping> { shares.
 /// The system is asked to connect a share, as Finder or Explorer would (blocking: called on a thread of its own).
 /// `ui`: the user asked - the system's own sign-in may appear; else it is silent. One request at a time: the
 /// system's mount service can hang for the whole machine under several (1.4.2's hard rule).
-pub fn connect(s: &Share, ui: bool) -> State {
+/// Gives how it stands, and whether THIS request connected it (one that was there already is adopted, not ours).
+pub fn connect(s: &Share, ui: bool) -> (State, bool) {
     static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(()); let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
-    if s.server.is_empty() { return resolve(s, &[], &|p| p.is_dir()) }
+    if s.server.is_empty() { return (resolve(s, &[], &|p| p.is_dir()), false) }
     // already there (connected meanwhile, by anything): adopted
-    let now = resolve(s, &mounts(), &|p| p.is_dir()); if now.root().is_some() { return now }
+    let now = resolve(s, &mounts(), &|p| p.is_dir()); if now.root().is_some() { return (now, false) }
     // the server is looked for first: a request for one that is not there never reaches the mount service (1.4.2: 3 s)
     use std::net::ToSocketAddrs; let host = format!("{}:445", s.server);
     let up = host.to_socket_addrs().ok().and_then(|mut a| a.next()).is_some_and(|a| std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_secs(3)).is_ok());
-    if !up { return State::Unreachable(format!("{} does not answer.", s.server)) }
-    match platform::connect(s, ui) { Ok(()) => { let st = resolve(s, &mounts(), &|p| p.is_dir()); if st.root().is_some() { st } else { State::Unreachable("The system connected it, but it is not in its list.".into()) } } Err(st) => st }
+    if !up { return (State::Unreachable(format!("{} does not answer.", s.server)), false) }
+    match platform::connect(s, ui) { Ok(()) => { let st = resolve(s, &mounts(), &|p| p.is_dir()); if st.root().is_some() { (st, true) } else { (State::Unreachable("The system connected it, but it is not in its list.".into()), false) } } Err(st) => (st, false) }
 }
 /// A share THIS application connected is disconnected (never another's: the caller knows which are ours).
 pub fn disconnect(root: &Path) -> Result<(), String> { platform::disconnect(root) }

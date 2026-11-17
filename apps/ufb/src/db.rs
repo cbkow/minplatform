@@ -133,6 +133,7 @@ pub fn to_native(id: &str) -> Option<PathBuf> { native_in(id, &mappings()) }
 pub fn translate(text: &str) -> Option<PathBuf> { let maps = mappings(); let id = identity_in(Path::new(text), &maps); if id.starts_with("vol:") { native_in(&id, &maps) } else { None } }
 /// A path of this machine as the OTHERS should read it: under a share, the share's own side for this system (never
 /// the landing's name, never a drive letter the others do not have); else as it is.
+#[allow(dead_code)]   // (what links and copied paths will carry: the next part of the slice)
 pub fn canonical(p: &Path) -> String { let maps = mappings(); let id = identity_in(p, &maps); let Some(rest) = id.strip_prefix("vol:") else { return p.to_string_lossy().into_owned() };
     let (uuid, rel) = rest.split_once('/').unwrap_or((rest, "")); let Some(m) = maps.iter().find(|m| m.uuid == uuid) else { return p.to_string_lossy().into_owned() };
     let root = if cfg!(windows) { &m.win } else { &m.mac }; let joined = if rel.is_empty() { root.clone() } else { format!("{}/{rel}", root.trim_end_matches(['/', '\\'])) };

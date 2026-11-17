@@ -85,6 +85,18 @@ pub fn rows_for_board(by: &[String], on: bool) -> Vec<Row> { let mut rows: Vec<R
 pub fn rows_for_tracked() -> Vec<Row> { vec![ours(TRK_OPEN, "Open in Job"), Row::Reveal, Row::Sep, ours(META_TRACK, "Untrack")] }
 /// The rows for an item of a job's list.
 pub fn rows_for_item(tracked: bool) -> Vec<Row> { vec![ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal, Row::Sep, ours(META_TRACK, if tracked { "Untrack" } else { "Mark as Tracked" })] }
+// A saved share of the sidebar (row 498).
+pub const SHARE_CONNECT: u32 = 70; pub const SHARE_DISCONNECT: u32 = 71; pub const SHARE_LAUNCH: u32 = 72; pub const SHARE_JOBS: u32 = 73; pub const SHARE_RENAME: u32 = 74; pub const SHARE_REMOVE: u32 = 75;
+/// `there`: it is connected (`ours`: by this application - only then can it be disconnected); `network`: it is a share with an address (a folder has nothing to connect); the two ticks as they stand.
+pub fn rows_for_share(there: bool, mine: bool, network: bool, at_launch: bool, jobs: bool) -> Vec<Row> {
+    let mut rows = vec![];
+    if there { rows.extend([ours(OPEN, "Open"), ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal, Row::Sep]); }
+    if network { if !there { rows.push(ours_row(SHARE_CONNECT, "Connect")); } else if mine { rows.push(ours_row(SHARE_DISCONNECT, "Disconnect")); }
+        rows.push(ours_row(SHARE_LAUNCH, if at_launch { "Do Not Connect at Launch" } else { "Connect at Launch" })); }
+    rows.extend([ours_row(SHARE_JOBS, if jobs { "Not a Jobs Folder" } else { "Is a Jobs Folder" }), Row::Sep, ours_row(SHARE_RENAME, "Rename\u{2026}"), ours_row(SHARE_REMOVE, "Remove from the Sidebar")]);
+    rows
+}
+fn ours_row(id: u32, label: &'static str) -> Row { Row::Ours { id, label: label.into() } }
 /// The rows for a place in the sidebar.
 pub fn rows_for_place() -> Vec<Row> { vec![ours(OPEN, "Open"), ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal] }
 

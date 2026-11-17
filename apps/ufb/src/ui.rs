@@ -53,8 +53,13 @@ enum Asked { /// delete these for good
     Delete(Vec<PathBuf>), /// the extension would change: the entry, the name typed, the name with the old extension kept
     Extension { path: PathBuf, typed: String, kept: String }, /// the engine's question about a name that is taken (its number)
     Conflict(u64), /// a new job in this jobs folder (its number, its name); a new item in this section's folder
-    NewJob(PathBuf), AddItem(PathBuf) }
+    NewJob(PathBuf), AddItem(PathBuf), /// a share to add (its address, or a folder); a share's name
+    AddShare, RenameShare(usize) }
 /// What was made off the window's thread (a job's folders, an item's skeleton): the path, or what went wrong.
+/// What a thread that looked at the shares, or asked the system to connect one, found.
+enum ShareNews { /// how each stands (by its id)
+    States(Vec<(String, crate::shares::State)>), /// the answer to a request to connect (`asked`: by the user - a failure is said)
+    Connected(String, crate::shares::State, bool, bool) }
 enum Made { Job(Result<PathBuf, String>), Item(Result<PathBuf, String>), /// a folder was chosen for a tracked item whose own is gone (none: the chooser was left)
     Relink(PathBuf, Option<PathBuf>) }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -69,7 +74,8 @@ struct Tab { panes: Vec<Pane>, active: usize, two: bool, split: f64, /// the tab
     tracker: Option<crate::tracker::Tracker> }
 struct SideRow { rect: Rect, path: Option<PathBuf>, enabled: bool, /// a subscribed job: it opens as a job, not as a folder
     job: bool, /// All Tracked: it opens the tracker of every subscribed job
-    all: bool }
+    all: bool, /// a saved share: its place in the list (it has a menu of its own, connected or not)
+    share: Option<usize> }
 
 /// Logical px.
 const LB_STRIP: f64 = 34.0; const LB_WEB_TOP: f64 = 52.0; const LB_BAR: f64 = 46.0; const TOOLBAR: f64 = 44.0; const JOB_BAR: f64 = 40.0; const JOB_LIST: f64 = 380.0; const JOB_LIST_MIN: f64 = 200.0; const TABS: f64 = 36.0; const TAB_PILL: f64 = 26.0; const TAB_MAX: f64 = 220.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
@@ -96,6 +102,10 @@ pub struct Ui {
     board: Option<crate::board::Board>, board_of: std::collections::HashMap<(PathBuf, String), crate::board::LaneBy>, board_btn: ActionButton, board_ctx: Vec<crate::board::LaneBy>,
     tracker: Option<crate::tracker::Tracker>, trk_btn: ActionButton, due_btns: Vec<ActionButton>, trk_press: Option<(Instant, usize)>,
     items: crate::itemlist::ItemList, job_meta: ActionButton, meta_ctx: (Option<usize>, Option<usize>, Vec<String>, Vec<(i64, String)>), made_tx: std::sync::mpsc::Sender<Made>, made_rx: Receiver<Made>, making: bool,
+    /// the saved shares (row 498): the list, how each stands, those a request to connect is out for; the news from the
+    /// threads that look and ask; the action on each row (Connect, Sign In), the plus in the section's header; the
+    /// shares marked for it were asked for once at the start
+    shares: Vec<crate::shares::Share>, share_states: Vec<crate::shares::State>, share_busy: std::collections::HashSet<String>, share_tx: std::sync::mpsc::Sender<ShareNews>, share_rx: Receiver<ShareNews>, share_btns: Vec<ActionButton>, share_add: ActionButton, share_menu: Option<usize>, shares_launched: bool,
     /// the mesh's count of what arrived, as this window last saw it (its lists are read again when it moves on)
     mesh_rev: u64,
     /// the columns of the lists, a kind of panel (row 488): 0 the browser's panes, 1 a job's first pane, 2 its second
@@ -167,11 +177,12 @@ impl Ui {
         crate::ops::subscribe(id, port.clone());
         let lightbox = { let p = port.clone(); crate::lightbox::Lightbox::new(Arc::new(move || p.send(Msg::Icon))) };
         let (made_tx, made_rx) = std::sync::mpsc::channel();
+        let (share_tx, share_rx) = std::sync::mpsc::channel(); let shares = crate::shares::load();
         let mesh_rev = { let p = port.clone(); crate::mesh::on_change(Arc::new(move || p.send(Msg::Icon))); crate::mesh::rev() };
         Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
             panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], tabs: vec![Tab::default()], tab: 0, tab_rects: vec![], tab_close: vec![], tab_new: icon_button("plus", key(Cmd::NewTab, "New tab")).size_s(),
             job: None, jobs: crate::db::with(|d| d.subscriptions()).unwrap_or_default(), job_secs: vec![], job_secs_for: vec![], job_refresh: icon_button("arrow-clockwise", key(Cmd::Refresh, "Read the job again")).size_s(), job_add: { let mut b = ActionButton::new("plus", "").size_s(); b.label = Some("Add".into()); b },
-            job_list: Rect::ZERO, panes_x0: 0.0, chip: None, coledit: None, board: None, board_of: Default::default(), board_btn: { let mut b = ActionButton::new("kanban", "Show the items as a board, or as the list").size_s(); b.label = Some("Board".into()); b }, board_ctx: vec![], tracker: None, trk_btn: { let mut b = ActionButton::new("list-checks", "The job's tracked items").size_s(); b.label = Some("Tracker".into()); b }, due_btns: crate::tracker::DUES.iter().map(|(_, label)| { let mut b = ActionButton::new("", "").size_s(); b.label = Some(label.to_string()); b }).collect(), trk_press: None, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, mesh_rev, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: false, folders_first: true,
+            job_list: Rect::ZERO, panes_x0: 0.0, chip: None, coledit: None, board: None, board_of: Default::default(), board_btn: { let mut b = ActionButton::new("kanban", "Show the items as a board, or as the list").size_s(); b.label = Some("Board".into()); b }, board_ctx: vec![], tracker: None, trk_btn: { let mut b = ActionButton::new("list-checks", "The job's tracked items").size_s(); b.label = Some("Tracker".into()); b }, due_btns: crate::tracker::DUES.iter().map(|(_, label)| { let mut b = ActionButton::new("", "").size_s(); b.label = Some(label.to_string()); b }).collect(), trk_press: None, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, share_states: vec![crate::shares::State::NotConnected; shares.len()], shares, share_busy: Default::default(), share_tx, share_rx, share_btns: vec![], share_add: ActionButton::new("plus", "Add a share: its address, or a folder").size_s(), share_menu: None, shares_launched: false, mesh_rev, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: false, folders_first: true,
             side_w: t::RAIL_WIDTH_MIN as f64, side_rect: Rect::ZERO, sections: [Section::new("Favorites", true), Section::new("Shares", true), Section::new("Jobs", true), Section::new("Places", true)], favorites, fixed: places::fixed(), volumes: vec![], root: String::new(), side_bar: ScrollBar::default(), side_rows: vec![], side_hover: None,
             back: icon_button("arrow-left", key(Cmd::Back, "Back")), forward: icon_button("arrow-right", key(Cmd::Forward, "Forward")), up: icon_button("arrow-up", key(Cmd::Up, "Enclosing folder")),
             list_btn: icon_button("list", key(Cmd::AsList, "List")), grid_btn: icon_button("squares-four", key(Cmd::AsGrid, "Grid")), pane2_btn: icon_button("columns", "Second pane  (Tab switches panes)".to_string()), size: Slider::new(((96.0 - grid::TILE_MIN) / (grid::TILE_MAX - grid::TILE_MIN)) as f32), search,
@@ -542,6 +553,74 @@ impl Ui {
         self.col_layouts[kind].show[c] = !self.col_layouts[kind].show[c]; let text = self.col_layouts[kind].to_text();
         crate::settings::with(|s| s.set_str(["columns/browser", "columns/job_top", "columns/job_low"][kind], &text));
     }
+    // ---------------------------------------------------------------- saved shares (row 498; `shares.rs`)
+    /// How the shares stand is asked of the system, off this thread.
+    fn refresh_shares(&mut self) {
+        let (shares, tx, port) = (self.shares.clone(), self.share_tx.clone(), self.port.clone()); if shares.is_empty() { self.apply_shares(); return }
+        let _ = std::thread::Builder::new().name("ufb-shares".into()).spawn(move || { let mounts = crate::shares::mounts(); let _ = tx.send(ShareNews::States(shares.iter().map(|s| (s.id.clone(), crate::shares::resolve(s, &mounts, &|p| p.is_dir()))).collect())); port.send(Msg::Icon); });
+    }
+    /// The shares, as they stand now, are what paths are read by: each one's place on this machine, its folders as jobs.
+    fn apply_shares(&mut self) {
+        let mut maps = crate::shares::mappings_of(&self.shares, &self.share_states); maps.extend(crate::shares::started_with());
+        if maps != crate::db::mappings() { crate::db::set_mappings(maps);
+            // (rows of this machine's own under a share that came are the share's from now on; the lists are read by the new places)
+            let _ = crate::db::with(|d| d.classify(&crate::db::mappings())); self.reload_jobs(); self.reload_lists(); if let Some(j) = self.job.as_mut() { j.reload(); } }
+        crate::jobview::set_share_roots(self.shares.iter().zip(self.share_states.iter()).filter(|(s, _)| s.jobs).filter_map(|(_, st)| st.root().map(Path::to_path_buf)).collect());
+        // the shares marked for it are asked for once, silently, when the application starts
+        if !std::mem::replace(&mut self.shares_launched, true) { for i in 0..self.shares.len() { if self.shares[i].at_launch && !self.shares[i].server.is_empty() && self.share_states.get(i) == Some(&crate::shares::State::NotConnected) { self.connect_share(i, false); } } }
+    }
+    /// The system is asked to connect a share (`asked`: by the user - its own sign-in may appear, and a failure is said).
+    fn connect_share(&mut self, i: usize, asked: bool) {
+        let Some(sh) = self.shares.get(i).cloned() else { return }; if sh.server.is_empty() || !self.share_busy.insert(sh.id.clone()) { return }
+        if let Some(st) = self.share_states.get_mut(i) { *st = crate::shares::State::Connecting; }
+        let (tx, port) = (self.share_tx.clone(), self.port.clone());
+        let _ = std::thread::Builder::new().name("ufb-share-connect".into()).spawn(move || { let (st, mounted) = crate::shares::connect(&sh, asked); let _ = tx.send(ShareNews::Connected(sh.id.clone(), st, asked, mounted)); port.send(Msg::Icon); });
+    }
+    fn share_news(&mut self, n: ShareNews) {
+        let now = Instant::now();
+        match n {
+            ShareNews::States(states) => for (id, st) in states { if self.share_busy.contains(&id) { continue } if let Some(i) = self.shares.iter().position(|s| s.id == id) { if self.share_states.len() <= i { self.share_states.resize(i + 1, crate::shares::State::NotConnected); }
+                // (what a request said - a sign-in is needed, the server does not answer - stands until the share is there)
+                // (one that is gone is no longer ours: whoever connects it next owns it)
+                if st.root().is_none() && self.shares[i].ours { self.shares[i].ours = false; crate::shares::save(&self.shares); }
+                if st.root().is_some() || !matches!(self.share_states[i], crate::shares::State::SignIn | crate::shares::State::Unreachable(_)) { self.share_states[i] = st; } } },
+            ShareNews::Connected(id, st, asked, mounted) => { self.share_busy.remove(&id); if let Some(i) = self.shares.iter().position(|s| s.id == id) {
+                // connected by this request: it is ours to disconnect (one that was there already is not)
+                if mounted && !self.shares[i].ours { self.shares[i].ours = true; crate::shares::save(&self.shares); }
+                if asked { if let crate::shares::State::Unreachable(why) = &st { self.toast.show(why, min_ui::toast::ToastKind::Negative, now); } }
+                if self.share_states.len() <= i { self.share_states.resize(i + 1, crate::shares::State::NotConnected); } self.share_states[i] = st; } places::refresh(&self.port); }
+        }
+        self.apply_shares();
+    }
+    fn add_share(&mut self, text: &str) {
+        match crate::shares::parse(text) {
+            Ok(sh) => { if self.shares.iter().any(|o| (!sh.server.is_empty() && o.server.eq_ignore_ascii_case(&sh.server) && o.share.eq_ignore_ascii_case(&sh.share)) || (!sh.local.is_empty() && o.local == sh.local)) { self.toast.show("That share is in the sidebar already.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
+                self.shares.push(sh); self.share_states.push(crate::shares::State::NotConnected); crate::shares::save(&self.shares); let i = self.shares.len() - 1;
+                // (asked for now, as the user's own request: the system may ask who signs in)
+                if !self.shares[i].server.is_empty() { self.connect_share(i, true); } else { self.refresh_shares(); } }
+            Err(why) => self.toast.show(&why, min_ui::toast::ToastKind::Notice, Instant::now()),
+        }
+    }
+    /// A row of a share's menu was chosen.
+    fn share_chosen(&mut self, id: u32) {
+        use crate::ctxmenu::*; let Some(i) = self.share_menu.filter(|i| *i < self.shares.len()) else { return };
+        match id {
+            SHARE_CONNECT => self.connect_share(i, true),
+            // only what this application connected (the menu offers it for nothing else)
+            SHARE_DISCONNECT => if let (true, Some(root)) = (self.shares[i].ours, self.share_states.get(i).and_then(|s| s.root()).map(Path::to_path_buf)) {
+                // (a pane that shows it lets go of it first: the system does not disconnect what is in use)
+                let home = places::home(); let port = self.port.clone(); for p in self.panes.iter_mut().chain(self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut())) { if p.path().starts_with(&root) { p.root = None; p.go(&port, home.clone()); } }
+                if self.job.as_ref().is_some_and(|j| j.path.starts_with(&root)) { self.job = None; self.tracker = None; }
+                let (tx, port, sh) = (self.share_tx.clone(), self.port.clone(), self.shares[i].clone()); self.shares[i].ours = false; crate::shares::save(&self.shares);
+                let _ = std::thread::Builder::new().name("ufb-share-disconnect".into()).spawn(move || { std::thread::sleep(Duration::from_millis(300)); let r = crate::shares::disconnect(&root); let mounts = crate::shares::mounts(); let st = match r { Ok(()) => crate::shares::resolve(&sh, &mounts, &|p| p.is_dir()), Err(why) => crate::shares::State::Unreachable(format!("It could not be disconnected: {why}")) }; let st = if st.root().is_none() { st } else { crate::shares::resolve(&sh, &mounts, &|p| p.is_dir()) }; let _ = tx.send(ShareNews::States(vec![(sh.id.clone(), st)])); port.send(Msg::Icon); }); },
+            SHARE_LAUNCH => { self.shares[i].at_launch = !self.shares[i].at_launch; crate::shares::save(&self.shares); }
+            SHARE_JOBS => { self.shares[i].jobs = !self.shares[i].jobs; crate::shares::save(&self.shares); self.apply_shares(); }
+            SHARE_RENAME => { use min_ui::{dialog::Dialog, text_button::Variant}; let mut d = Dialog::new("Rename the Share", "Its name in the sidebar. The share itself is not touched.", vec![("Cancel", Variant::Secondary), ("Rename", Variant::Primary)]).with_field("Name", ""); d.show_with(&self.shares[i].name.clone(), &mut self.fonts); self.dialog = Some((d, Asked::RenameShare(i))); }
+            // (the share stays connected, as it is: only its row goes)
+            SHARE_REMOVE => { self.shares.remove(i); if i < self.share_states.len() { self.share_states.remove(i); } crate::shares::save(&self.shares); self.apply_shares(); }
+            _ => {}
+        }
+    }
     /// A text is being typed somewhere (a field of the window, or of an open question).
     fn text_focus(&self) -> bool { self.chip.is_some() || self.coledit.is_some() || matches!(self.focus, Focus::Path | Focus::Search | Focus::Rename | Focus::Cell) || self.dialog.as_ref().is_some_and(|(d, _)| !d.fields.is_empty()) }
 
@@ -572,6 +651,7 @@ impl Ui {
             self.items_reload(); } }
         while let Ok(m) = self.made_rx.try_recv() { any = true; self.on_made(m); }
         if let Some(t) = self.tracker.as_mut() { any |= t.poll(); }
+        while let Ok(n) = self.share_rx.try_recv() { any = true; self.share_news(n); }
         // something arrived from another machine (or left for one): the lists show it
         { let r = crate::mesh::rev(); if r != self.mesh_rev { self.mesh_rev = r; any = true; if self.list_mut().edit.is_none() && self.chip.is_none() && self.coledit.is_none() && !self.board.as_ref().is_some_and(|b| b.dragging()) { self.reload_lists(); } } }
         // what a page in the web view told: Escape pressed inside it closes the lightbox
@@ -598,7 +678,7 @@ impl Ui {
         any
     }
     /// The window became active: the volumes are looked for again, and each pane asks whether its folder changed.
-    pub fn activated(&mut self) { places::refresh(&self.port); let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } self.reload_jobs(); if let Some(j) = self.job.as_mut() { j.reload(); } if let Some(t) = self.tracker.as_mut() { t.reload(); } }
+    pub fn activated(&mut self) { places::refresh(&self.port); self.refresh_shares(); let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } self.reload_jobs(); if let Some(j) = self.job.as_mut() { j.reload(); } if let Some(t) = self.tracker.as_mut() { t.reload(); } }
     pub fn deactivated(&mut self) { if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
 
     // ---------------------------------------------------------------- the lightbox (`lightbox.rs`)
@@ -888,6 +968,8 @@ impl Ui {
                 let _ = std::thread::Builder::new().name("ufb-make".into()).spawn(move || { let _ = tx.send(Made::Job(crate::jobview::project_type().new_job(&parent, &number, &name))); port.send(Msg::Icon); }); },
             Asked::AddItem(dir) => if button == 1 { let (name, tx, port) = (d.value_at(0), self.made_tx.clone(), self.port.clone()); self.making = true;
                 let _ = std::thread::Builder::new().name("ufb-make".into()).spawn(move || { let _ = tx.send(Made::Item(crate::jobview::project_type().add_item(&dir, &name, &crate::jobview::skeletons(), &crate::jobview::today()))); port.send(Msg::Icon); }); },
+            Asked::AddShare => if button == 1 { let text = d.value_at(0); self.add_share(&text); },
+            Asked::RenameShare(i) => if button == 1 { let name = d.value_at(0); if let Some(sh) = self.shares.get_mut(i).filter(|_| !name.is_empty()) { sh.name = name; crate::shares::save(&self.shares); } },
             Asked::Extension { path, typed, kept } => { let name = if button == 0 { typed } else { kept }; if path.file_name().is_some_and(|n| n.to_string_lossy() != name.as_str()) { crate::ops::submit(self.id, crate::ops::Op::Rename { path, name }); } }
         }
     }
@@ -946,7 +1028,9 @@ impl Ui {
     fn leave_path(&mut self) { if self.focus == Focus::Path { self.focus = Focus::Pane; } self.field.focused = false; self.field.error = false; self.path_error = None; self.check = None; }
     fn submit_path(&mut self) {
         let current = self.here();
-        match crumbs::typed_path(self.field.text(), &places::home(), &current) {
+        // a path from another machine - the other system's spelling, a numbered landing - is this machine's path to the same thing (row 498)
+        let typed = crate::db::translate(self.field.text().trim()).or_else(|| crumbs::typed_path(self.field.text(), &places::home(), &current));
+        match typed {
             // whether it is a folder is asked off this thread; the answer navigates or shows the error
             Some(p) => { let req = lister::next_req(); self.check = Some(req); self.path_error = None; self.field.error = false; lister::check(&self.port, req, p); }
             None => self.leave_path(),
@@ -1086,6 +1170,8 @@ impl Ui {
     /// A row of OUR OWN in the context menu was chosen.
     pub fn menu_chosen(&mut self, id: u32) {
         use crate::ctxmenu::{COLUMN, SORT, SUBSCRIBE, UNSUBSCRIBE, CONTENTS, COPY, DUPLICATE, GROUP, NEW_FOLDER, NEW_TAB, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, SPLIT, TRASH};
+        // (a saved share's own rows)
+        if (crate::ctxmenu::SHARE_CONNECT..80).contains(&id) { return self.share_chosen(id) }
         // (the item list's own rows: columns, options, the star)
         if (crate::ctxmenu::META_ADD..70).contains(&id) || id >= crate::ctxmenu::META_SHOW { return self.meta_chosen(id) }
         let Some((pane, folder)) = self.menu_for.clone() else { return };
@@ -1197,6 +1283,15 @@ impl Ui {
         if let Event::Down { x, y, .. } = *e { if self.search.hit(x, y) { self.leave_path(); self.focus = Focus::Search; self.search.focused = true; } else if self.focus == Focus::Search { self.leave_search(); } }
         // the sidebar
         self.side_bar.event(e, now);
+        // the shares: the plus in their header (a new share), the action on a row (Connect, Sign In), a row's own menu
+        if self.share_add.rect.width() > 0.0 && self.share_add.event(e, now) == Response::Clicked { use min_ui::{dialog::Dialog, text_button::Variant};
+            let mut d = Dialog::new("Add a Share", "Its address - smb://server/share or \\\\server\\share - or a folder on this machine that holds the same storage.", vec![("Cancel", Variant::Secondary), ("Add", Variant::Primary)]).with_field("Address or folder", "smb://server/share"); d.show_with("", &mut self.fonts); self.dialog = Some((d, Asked::AddShare)); return }
+        { let mut go = None; for (k, b) in self.share_btns.iter_mut().enumerate() { if b.rect.width() > 0.0 && b.event(e, now) == Response::Clicked { go = Some(k); } } if let Some(k) = go { self.connect_share(k, true); return }
+            if let Event::Down { x, y, .. } = *e { if self.share_btns.iter().any(|b| b.rect.width() > 0.0 && b.hit(x, y)) || (self.share_add.rect.width() > 0.0 && self.share_add.hit(x, y)) { return } } }
+        if let Event::Down { x, y, button: Button::Secondary } = *e { let p = kurbo::Point::new(x, y); if let Some(k) = self.side_rows.iter().find(|r| r.rect.contains(p)).and_then(|r| r.share).filter(|_| self.side_rect.contains(p)) {
+            let (sh, st) = (self.shares[k].clone(), self.share_states.get(k).cloned().unwrap_or(crate::shares::State::NotConnected)); let root = st.root().map(Path::to_path_buf);
+            self.share_menu = Some(k); self.menu_job = false; self.menu_for = root.clone().map(|r| (None, r));
+            self.show_menu(crate::ctxmenu::Ask { at: (x, y), paths: root.into_iter().collect(), rows: crate::ctxmenu::rows_for_share(st.root().is_some(), sh.ours, !sh.server.is_empty(), sh.at_launch, sh.jobs) }); return } }
         for sec in self.sections.iter_mut() { sec.event(e, now); }
         self.side_hover = at.filter(|p| self.side_rect.contains(*p)).and_then(|p| self.side_rows.iter().position(|r| r.rect.contains(p)));
         if let Event::Down { x, y, button: Button::Primary } = *e { let p = kurbo::Point::new(x, y);
@@ -1444,6 +1539,9 @@ impl Ui {
             "carddrop" => { let mut p = arg.splitn(2, ':'); if let (Some(i), Some(k)) = (p.next().and_then(num), p.next().and_then(num)) { if let Some(v) = self.board.as_ref().and_then(|b| b.lanes.get(k).map(|l| l.value.clone())) { self.board_acts(vec![crate::board::Act::Drop(i, v)]); } } },
             // the mesh: `mesh` says its state
             "mesh" => eprintln!("UFB_DEMO: mesh {:?}", crate::mesh::status().map(|m| format!("{} leader {:?} peers {} pending {} written {} merged {} secret {} strangers {}", m.node, m.leader, m.peers, m.pending, m.written > 0, m.merged > 0, !m.secret.is_empty(), m.strangers))),
+            // the saved shares: `share:add:<address or folder>` `share:connect:<n>` `share:disconnect:<n>` `share:jobs:<n>` `share:remove:<n>` `shares` (says them)
+            "share" => { let (what, rest) = arg.split_once(':').unwrap_or((arg, "")); match what { "add" => self.add_share(rest), "connect" => if let Some(n) = num(rest) { self.connect_share(n, true); }, other => if let Some(n) = num(rest) { self.share_menu = Some(n); self.share_chosen(match other { "disconnect" => crate::ctxmenu::SHARE_DISCONNECT, "jobs" => crate::ctxmenu::SHARE_JOBS, "remove" => crate::ctxmenu::SHARE_REMOVE, _ => 0 }); } } },
+            "shares" => eprintln!("UFB_DEMO: shares: {}", self.shares.iter().enumerate().map(|(i, sh)| format!("{} [{}{}{}] {:?}", sh.name, if sh.server.is_empty() { format!("folder {}", sh.local) } else { format!("smb://{}/{}", sh.server, sh.share) }, if sh.jobs { ", jobs" } else { "" }, if sh.ours { ", ours" } else { "" }, self.share_states.get(i))).collect::<Vec<_>>().join(" | ")),
             "joblist" => if let Ok(px) = arg.parse::<f64>() { self.job_w = px.clamp(JOB_LIST_MIN, 1200.0); },
             "pane2toggle" => self.command(Cmd::SecondPane),
             "itemfocus" => if self.job.is_some() { self.focus = Focus::Items; },
@@ -1512,7 +1610,7 @@ impl Ui {
             other => eprintln!("UFB_DEMO: unknown step {other:?}"),
         }
     }
-    fn busy(&self) -> bool { self.panes.iter().take(self.shown()).any(|p| p.loading()) || self.check.is_some() || self.making || self.job.as_ref().is_some_and(|j| j.loading) }
+    fn busy(&self) -> bool { self.panes.iter().take(self.shown()).any(|p| p.loading()) || self.check.is_some() || self.making || !self.share_busy.is_empty() || self.job.as_ref().is_some_and(|j| j.loading) }
     fn run_demo(&mut self) {
         while !self.demo.is_empty() {
             if self.busy() { return }
@@ -1525,7 +1623,7 @@ impl Ui {
     pub fn animating(&self) -> bool {
         let now = Instant::now(); let n = self.shown();
         self.tips.next_change(now).is_some() || self.side_bar.animating(now) || self.panes.iter().take(n).any(|p| p.animating(now) || (p.load == Load::Loading)) || [&self.back, &self.forward, &self.up, &self.list_btn, &self.grid_btn, &self.pane2_btn, &self.tab_new].iter().any(|b| b.animating(now)) || self.tab_close.iter().any(|b| b.animating(now))
-            || self.crumbs.iter().any(|(b, _)| b.animating(now)) || self.sections.iter().any(|sec| sec.animating(now)) || self.size.animating(now) || self.text_focus() || self.dialog.is_some() || self.making || self.job.as_ref().is_some_and(|j| j.loading) || self.items.animating(now) || self.board.as_ref().is_some_and(|b| b.animating(now)) || self.board_btn.animating(now) || self.tracker.as_ref().is_some_and(|t| t.list.animating(now)) || self.trk_btn.animating(now) || self.due_btns.iter().any(|b| b.animating(now)) || self.chip.is_some() || self.coledit.as_ref().is_some_and(|e| e.animating(now)) || self.job_meta.animating(now) || self.job_refresh.animating(now) || self.job_add.animating(now) || self.job_secs.iter().any(|b| b.animating(now)) || self.toast.is_shown() || self.rename_next.is_some() || self.path_error.is_some() || self.lightbox_live(now)
+            || self.crumbs.iter().any(|(b, _)| b.animating(now)) || self.sections.iter().any(|sec| sec.animating(now)) || self.size.animating(now) || self.text_focus() || self.dialog.is_some() || self.making || self.job.as_ref().is_some_and(|j| j.loading) || self.items.animating(now) || !self.share_busy.is_empty() || self.share_add.animating(now) || self.share_btns.iter().any(|b| b.animating(now)) || self.board.as_ref().is_some_and(|b| b.animating(now)) || self.board_btn.animating(now) || self.tracker.as_ref().is_some_and(|t| t.list.animating(now)) || self.trk_btn.animating(now) || self.due_btns.iter().any(|b| b.animating(now)) || self.chip.is_some() || self.coledit.as_ref().is_some_and(|e| e.animating(now)) || self.job_meta.animating(now) || self.job_refresh.animating(now) || self.job_add.animating(now) || self.job_secs.iter().any(|b| b.animating(now)) || self.toast.is_shown() || self.rename_next.is_some() || self.path_error.is_some() || self.lightbox_live(now)
             // (a scripted look keeps the window drawing by itself - which HID that a playing clip did not: `UFB_DEMO_IDLE=1`
             // stops that once the lightbox is open, so that what is measured is what a person gets)
             || ((!self.demo.is_empty() || (self.shot.is_some() && !self.done)) && (std::env::var_os("UFB_DEMO_IDLE").is_none() || !self.lightbox.is_open()))
@@ -1777,34 +1875,57 @@ impl Ui {
         let (pad_s, row_h, head_h2) = (8.0 * s, SIDE_ROW * s, Section::height(s)); let (x0, x1) = (sr.x0 + pad_s, sr.x1 - pad_s);
         // (the row one is in: the job the tab shows, or - in the browser - the place the active pane is in)
         let current = match &self.job { Some(j) => j.path.clone(), None => self.panes[self.active].path().to_path_buf() };
+        // (the shares: a row each, with how it stands - drawn below, with its words and its action)
+        let share_places: Vec<Place> = self.shares.iter().map(|sh| Place { label: sh.name.clone(), path: PathBuf::new(), icon: if sh.server.is_empty() { "folder-simple" } else { "hard-drives" } }).collect();
+        if self.share_btns.len() != self.shares.len() { self.share_btns = self.shares.iter().map(|_| { let mut b = ActionButton::new("", "").size_s(); b.label = Some("Connect".into()); b }).collect(); }
         let job_places: Vec<Place> = self.jobs.iter().map(|j| Place { label: j.name.clone(), path: j.path.clone(), icon: "briefcase" }).collect();
         // each section: (its rows, the quiet line it shows when it has none)
-        let lists: [(Vec<&Place>, &str); 4] = [(self.favorites.iter().collect(), "No favorites yet"), (vec![], "No saved shares"), (job_places.iter().collect(), "No jobs"), (self.fixed.iter().chain(self.volumes.iter()).collect(), "")];
+        let lists: [(Vec<&Place>, &str); 4] = [(self.favorites.iter().collect(), "No favorites yet"), (share_places.iter().collect(), "No saved shares"), (job_places.iter().collect(), "No jobs"), (self.fixed.iter().chain(self.volumes.iter()).collect(), "")];
         // the row of the place the active pane is in: the longest of the places that is exactly it
         let mut y = sr.y0 + pad_s - self.side_bar.offset; let top = y;
         let all_front = self.tracker.as_ref().is_some_and(|t| t.scope == crate::tracker::Scope::All);
-        let side_row = |scene: &mut Scene, fonts: &mut Fonts, rows: &mut Vec<SideRow>, y: f64, icon: &str, label: &str, path: Option<&Path>, enabled: bool, hover: Option<usize>, job: bool, all: bool| {
+        let side_row = |scene: &mut Scene, fonts: &mut Fonts, rows: &mut Vec<SideRow>, y: f64, icon: &str, label: &str, path: Option<&Path>, enabled: bool, hover: Option<usize>, job: bool, all: bool, keep: f64| {
             let r = Rect::new(x0 + 4.0 * s, y, x1 - 4.0 * s, y + row_h); let here = if all { all_front } else { !all_front && job == in_job && path.is_some_and(|p| p == current) }; let idx = rows.len();
             if here { paint::rounded(scene, r, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, t::RAIL_ROW_ACTIVE_FILL); } else if enabled && hover == Some(idx) { paint::rounded(scene, r, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, t::HOVER_BACKGROUND_COLOR); }
             let color = paint::color(if !enabled { t::DISABLED_CONTENT_COLOR } else if here { t::RAIL_ROW_ACTIVE_LABEL } else { t::NEUTRAL_CONTENT_COLOR_DEFAULT });
             let mut tx = r.x0 + 8.0 * s;
             if let Some(g) = fonts.icon(icon, 15.0 * s as f32, if here || !enabled { color } else { paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT) }) { draw_layout(scene, &g, Affine::translate((tx, y + (row_h - g.height() as f64) / 2.0))); } tx += 22.0 * s;
-            let l = fonts.layout_fit(label, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, color, r.x1 - tx - 6.0 * s);
+            let l = fonts.layout_fit(label, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, color, (r.x1 - tx - 6.0 * s - keep).max(8.0 * s));
             draw_layout(scene, &l, Affine::translate((tx, y + (row_h - l.height() as f64) / 2.0)));
-            rows.push(SideRow { rect: r, path: path.map(Path::to_path_buf), enabled, job, all });
+            rows.push(SideRow { rect: r, path: path.map(Path::to_path_buf), enabled, job, all, share: None });
         };
         for (i, (rows, empty)) in lists.iter().enumerate() {
             let open = self.sections[i].expanded; let body_h = if !open { 0.0 } else if rows.is_empty() { row_h } else { rows.len() as f64 * row_h } + if open { 6.0 * s } else { 0.0 };
             section::paint_tile(scene, Rect::new(x0, y, x1, y + head_h2 + body_h), s);
-            self.sections[i].rect = Rect::new(x0, y, x1, y + head_h2); self.sections[i].paint(scene, fonts, s, now, i == 0); y += head_h2;
+            self.sections[i].rect = Rect::new(x0, y, x1, y + head_h2); self.sections[i].paint(scene, fonts, s, now, i == 0);
+            // (the shares' header carries the plus)
+            if i == 1 { let sb = t::ACTION_BUTTON_HEIGHT_S as f64 * s; self.share_add.rect = Rect::new(x1 - 8.0 * s - sb, y + (head_h2 - sb) / 2.0, x1 - 8.0 * s, y + (head_h2 + sb) / 2.0); self.share_add.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); self.share_add.paint(scene, fonts, s, now); }
+            y += head_h2;
             if open {
                 if rows.is_empty() { let l = fonts.layout_fit(empty, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, sub, x1 - x0 - 24.0 * s); draw_layout(scene, &l, Affine::translate((x0 + 12.0 * s, y + (row_h - l.height() as f64) / 2.0))); y += row_h; }
-                for p in rows { side_row(scene, fonts, &mut self.side_rows, y, p.icon, &p.label, Some(&p.path), true, self.side_hover, i == 2, false); y += row_h; }
+                if i == 1 { for (k, sh) in self.shares.iter().enumerate() {
+                    // a share: where it is when it is there (a press goes there), how it stands in words when it is not, and what can be done about it
+                    let st = self.share_states.get(k).cloned().unwrap_or(crate::shares::State::NotConnected); let root = st.root().map(Path::to_path_buf);
+                    let (words, tone, action) = match &st { crate::shares::State::Connected(_) => (String::new(), t::POSITIVE_VISUAL_COLOR, None), crate::shares::State::Landed(_) => (st.words(), t::NOTICE_VISUAL_COLOR, None),
+                        crate::shares::State::Connecting => (st.words(), t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT, None), crate::shares::State::NotConnected => (if sh.server.is_empty() { "not there".to_string() } else { String::new() }, t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT, (!sh.server.is_empty()).then_some("Connect")),
+                        // (why it is not reachable is in the row's tooltip, and was said when the user asked)
+                        crate::shares::State::SignIn => (String::new(), t::NEGATIVE_VISUAL_COLOR, Some("Sign In\u{2026}")), crate::shares::State::Unreachable(_) => (String::new(), t::NEGATIVE_VISUAL_COLOR, Some("Connect")) };
+                    // at the row's right end: the state's dot; before it the action, or the words - the name has what is left
+                    let b = &mut self.share_btns[k]; b.rect = Rect::ZERO; let bw = match action { Some(label) => { b.label = Some(label.to_string()); b.measure(fonts, s).0 } None => 0.0 };
+                    let wl = (!words.is_empty()).then(|| fonts.layout_fit(&words, Family::Sans, t::BODY_SIZE_S * 0.92 * s as f32, t::FONT_WEIGHT_REGULAR as f32, sub, 86.0 * s));
+                    let keep = 16.0 * s + if bw > 0.0 { bw + 6.0 * s } else { 0.0 } + wl.as_ref().map(|l| l.width() as f64 + 6.0 * s).unwrap_or(0.0);
+                    side_row(scene, fonts, &mut self.side_rows, y, if sh.server.is_empty() { "folder-simple" } else { "hard-drives" }, &sh.name, root.as_deref(), true, self.side_hover, false, false, keep);
+                    let r = self.side_rows.last().map(|x| x.rect).unwrap_or(Rect::ZERO); if let Some(row) = self.side_rows.last_mut() { row.share = Some(k); }
+                    let d = 7.0 * s; paint::rounded(scene, Rect::new(r.x1 - 10.0 * s - d, y + (row_h - d) / 2.0, r.x1 - 10.0 * s, y + (row_h + d) / 2.0), d / 2.0, tone); let right = r.x1 - 22.0 * s;
+                    if bw > 0.0 { let sb = t::ACTION_BUTTON_HEIGHT_S as f64 * s; b.rect = Rect::new(right - bw, y + (row_h - sb) / 2.0, right, y + (row_h + sb) / 2.0); b.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); b.paint(scene, fonts, s, now); }
+                    else if let Some(l) = wl { draw_layout(scene, &l, Affine::translate((right - l.width() as f64, y + (row_h - l.height() as f64) / 2.0))); }
+                    y += row_h; } }
+                else { for p in rows { side_row(scene, fonts, &mut self.side_rows, y, p.icon, &p.label, Some(&p.path), true, self.side_hover, i == 2, false, 0.0); y += row_h; } }
                 y += 6.0 * s;
             }
             y += 8.0 * s;
             // All Tracked: a destination of its own between the jobs and the places (row 463) - not this slice's
-            if i == 2 { side_row(scene, fonts, &mut self.side_rows, y, "list-checks", "All Tracked", None, true, self.side_hover, false, true); y += row_h + 8.0 * s; }
+            if i == 2 { side_row(scene, fonts, &mut self.side_rows, y, "list-checks", "All Tracked", None, true, self.side_hover, false, true, 0.0); y += row_h + 8.0 * s; }
         }
         scene.pop_layer();
         self.side_bar.set(sr, y - top + pad_s, s); self.side_bar.paint(scene, now);
@@ -1852,7 +1973,10 @@ impl Ui {
             for i in 0..self.tab_rects.len() { let r = self.tab_rects[i]; if r.contains(pt) { let b = &self.tab_close[i]; over = Some(if b.rect.contains(pt) { (3000 + i as u64, b.rect, b.tooltip.clone()) } else { (2000 + i as u64, r, places.get(i).map(|p| p.1.to_string_lossy().into_owned()).unwrap_or_default()) }); } }
             if self.tab_new.rect.contains(pt) { over = Some((1999, self.tab_new.rect, self.tab_new.tooltip.clone())); }
             // a sidebar row whose name is cut, and a place's full path
-            if let Some(r) = self.side_hover.and_then(|i| self.side_rows.get(i)) { if let Some(p) = &r.path { over = Some((1000 + self.side_hover.unwrap_or(0) as u64, r.rect, p.to_string_lossy().into_owned())); } else if r.all { over = Some((999, r.rect, "Every tracked item of the subscribed jobs".into())); } }
+            if let Some(r) = self.side_hover.and_then(|i| self.side_rows.get(i)) { if let Some(p) = &r.path { over = Some((1000 + self.side_hover.unwrap_or(0) as u64, r.rect, p.to_string_lossy().into_owned())); } else if r.all { over = Some((999, r.rect, "Every tracked item of the subscribed jobs".into())); }
+                // a share says what it is: its address, and what a request to connect it said
+                if let Some(sh) = r.share.and_then(|k| self.shares.get(k)) { let st = r.share.and_then(|k| self.share_states.get(k)); let what = if sh.server.is_empty() { sh.local.clone() } else { format!("smb://{}/{}", sh.server, sh.share) };
+                    over = Some((1500 + r.share.unwrap_or(0) as u64, r.rect, match st { Some(crate::shares::State::Unreachable(why)) => format!("{what}\n{why}"), Some(crate::shares::State::Landed(p)) => format!("{what}\nIt is at {} here - under another name than its own. It works as it is.", p.display()), Some(s) => match s.root() { Some(p) => format!("{what}\n{}", p.display()), None => what }, None => what })); } }
         }
         let shown_now = if self.tip_demo.is_some() { now - Duration::from_millis(t::TOOLTIP_DELAY as u64 + 50).min(now.duration_since(self.born)) } else { now };
         self.tips.hover(over.as_ref().map(|(k, r, text)| (*k, *r, text.as_str())), shown_now); self.tips.tick(now); self.tips.paint(scene, fonts, s, Rect::new(0.0, 0.0, w, h), now);
