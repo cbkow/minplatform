@@ -633,8 +633,10 @@ impl App {
                 // (a path tool keeps the selected pen path: it is what the tool works on; every other change of tool lets the selection go)
                 let keep = t.is_some_and(|t| t.is_path()) && self.current_note().is_some_and(|cur| self.annot.path_selected(&cur));
                 match t { Some(t) => { self.annot.tool = t; self.annot.active = true; } None => { self.annot.active = false; self.annot.escape(); } } if !keep { self.annot.selected = None; } }
-            N::Color(h) => { if let Some(c) = qcv_notes_color(&h) { self.annot.color = c; self.settings.set_str(settings::k::ANNOTATION_COLOR, &h); } }
-            N::Width(w) => self.annot.width = w,
+            // (with the arrow, what is selected takes the colour / the width too: row 583)
+            N::Color(h) => { if let Some(c) = qcv_notes_color(&h) { self.annot.color = c; self.settings.set_str(settings::k::ANNOTATION_COLOR, &h);
+                if self.annot.tool == annotate::Tool::Select { if let Some(cur) = self.current_note() && let Some(done) = self.annot.restyle(&cur, Some(c), None) { self.after_annotation(done); } } } }
+            N::Width(w) => { self.annot.width = w; if self.annot.tool == annotate::Tool::Select { if let Some(cur) = self.current_note() && let Some(done) = self.annot.restyle(&cur, None, Some(w)) { self.after_annotation(done); } } }
             N::Height(h) => { self.settings.set_float(settings::k::NOTES_DRAWER_HEIGHT, h); }
         }
         if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }

@@ -1683,7 +1683,7 @@ impl App {
         if self.files.pal_pen {
             let chosen = match &out { colours::Out::Pick(v) => Some(v.clone()), colours::Out::Add(h) => Some(Some(h.clone())), _ => None };
             if let Some(v) = chosen { let c = v.as_deref().and_then(mn_layout::colour).map(|c| { let x = c.to_rgba8(); [x.r as f32 / 255.0, x.g as f32 / 255.0, x.b as f32 / 255.0, 1.0] }).unwrap_or([1.0, 0.0, 0.0, 1.0]);
-                self.files.pen = Some(c); if let Some(p) = self.player.as_mut() { p.ann.color = c; } if let Some(cv) = self.files.canvas.as_mut() { cv.pen = c; cv.restyle(Some(c), None); } save_pen_settings(self.files.pen, self.files.pen_w); self.page_picked(|l| { l.s.color = qcv_notes::strokes::Stroke::qcolor(c); true }); self.pal.close(); self.files.pal_pen = false; if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+                self.files.pen = Some(c); if let Some(p) = self.player.as_mut() { p.ann.color = c; } self.video_restyle(Some(c), None); if let Some(cv) = self.files.canvas.as_mut() { cv.pen = c; cv.restyle(Some(c), None); } save_pen_settings(self.files.pen, self.files.pen_w); self.page_picked(|l| { l.s.color = qcv_notes::strokes::Stroke::qcolor(c); true }); self.pal.close(); self.files.pal_pen = false; if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
             if !self.pal.is_open() { self.files.pal_pen = false; }
             if matches!(out, colours::Out::None | colours::Out::Redraw) { return } }
         let pick = |me: &mut App, v: Option<String>| { me.pal.close(); if let (mn_doc::MarkKind::Highlight, Some(c)) = (role, &v) { me.last_bg = c.clone(); }
@@ -1926,7 +1926,7 @@ impl App {
             T::DrawSelect => self.arm(qcv_annotate::Tool::Select), T::DrawPen => self.arm(qcv_annotate::Tool::Freehand), T::DrawPath => self.arm(qcv_annotate::Tool::Pen), T::PtSelect => self.arm(qcv_annotate::Tool::PathSelect), T::PtAdd => self.arm(qcv_annotate::Tool::PathAdd), T::PtRemove => self.arm(qcv_annotate::Tool::PathRemove), T::PtConvert => self.arm(qcv_annotate::Tool::PathConvert), T::DrawRect => self.arm(qcv_annotate::Tool::Rectangle), T::DrawOval => self.arm(qcv_annotate::Tool::Oval),
             T::DrawArrow => self.arm(qcv_annotate::Tool::Arrow), T::DrawLine => self.arm(qcv_annotate::Tool::Line), T::DrawErase => self.arm(qcv_annotate::Tool::Eraser),
             T::PenThinner | T::PenThicker => { let steps = [1.0f32, 2.0, 3.0, 4.0, 6.0, 9.0, 14.0, 22.0, 32.0, 48.0, 64.0]; let w = self.files.pen_w.unwrap_or(6.0); let i = steps.iter().position(|x| *x >= w).unwrap_or(4);
-                let j = if tool == T::PenThinner { i.saturating_sub(1) } else { (i + 1).min(steps.len() - 1) }; self.files.pen_w = Some(steps[j]); if let Some(p) = self.player.as_mut() { p.ann.width = steps[j]; }
+                let j = if tool == T::PenThinner { i.saturating_sub(1) } else { (i + 1).min(steps.len() - 1) }; self.files.pen_w = Some(steps[j]); if let Some(p) = self.player.as_mut() { p.ann.width = steps[j]; } self.video_restyle(None, Some(steps[j]));
                 if let Some(cv) = self.files.canvas.as_mut() { cv.pen_w = steps[j] as f64; cv.restyle(None, Some(steps[j] as f64)); } save_pen_settings(self.files.pen, self.files.pen_w);
                 { let was = w as f64; let now = steps[j] as f64; self.page_picked(|l| { l.s.width *= now / was.max(0.1); true }); }
                 self.notice = Some((format!("Line width {}", steps[j]), Instant::now() + std::time::Duration::from_secs(2))); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
@@ -2045,6 +2045,11 @@ impl App {
         let _ = std::thread::Builder::new().name("mn-note-annotated".into()).spawn(move || { let rgb: Vec<u8> = out.chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect(); if let Err(e) = min_image::write::png8(&annotated.to_string_lossy(), &rgb, w, h) { eprintln!("note picture: {e}"); } let _ = tx.send(annotated); if let Some(p) = WAKE.get() { p.wake_up(); } });
     }
     /// A drawing tool is armed (the same again: put down). A click on a video's picture then draws instead of playing.
+    /// With the arrow on a video, what is selected takes the pen's colour / width (row 583).
+    fn video_restyle(&mut self, color: Option<[f32; 4]>, width: Option<f32>) {
+        if self.files.tool != Some(qcv_annotate::Tool::Select) { return }
+        if let Some((_, cur)) = self.video_geo() { let done = self.player.as_mut().and_then(|p| p.ann.restyle(&cur, color, width)); if let Some(d) = done { self.annotated(d); } }
+    }
     fn arm(&mut self, tool: qcv_annotate::Tool) {
         // a path the pen has under way ends as it stands before the tool changes
         if let Some((_, cur)) = self.video_geo() { let c = self.player.as_mut().and_then(|p| p.ann.pen_finish(&cur)); if let Some(c) = c { self.annotated(c); } }
