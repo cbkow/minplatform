@@ -81,7 +81,20 @@ pub fn notes_row(scene: &mut Scene, fonts: &mut Fonts, media: &mut Media, descri
     scene.pop_layer();
 }
 /// Where a canvas card's notes row is: under its strip (row 336).
-pub fn card_row(strip: Rect, s: f64) -> Rect { Rect::new(strip.x0, strip.y1 + 4.0 * s, strip.x1, strip.y1 + 4.0 * s + mn_layout::VIDEO_NOTES as f64 * s) }
+pub fn card_row(strip: Rect, s: f64) -> Rect { Rect::new(strip.x0, strip.y1 + 4.0 * s, strip.x1, strip.y1 + 4.0 * s + (mn_layout::VIDEO_NOTES - mn_layout::VIDEO_CAPTION) as f64 * s) }   // (a card on a canvas: no words' bar, the row as it was)
+/// The bar a note's words stand in, under a video's strip (blocks whose clip has notes).
+pub fn caption_bar(strip: Rect, s: f64) -> Rect { Rect::new(strip.x0, strip.y1, strip.x1, strip.y1 + mn_layout::VIDEO_CAPTION as f64 * s) }
+/// Words on at most two lines of `w`, cut with an ellipsis; true when they were cut.
+pub fn two_lines(fonts: &mut Fonts, text: &str, size: f32, color: Color, w: f64) -> (parley::Layout<peniko::Brush>, bool) {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let one = fonts.layout("Ag", Family::Sans, size, 400.0, color).height() as f64;
+    let full = fonts.layout_width(&flat, Family::Sans, size, 400.0, color, Some(w.max(1.0) as f32));
+    if full.height() as f64 <= one * 2.0 + 1.0 { return (full, false) }
+    let chars: Vec<char> = flat.chars().collect(); let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi { let mid = (lo + hi).div_ceil(2); let t: String = chars[..mid].iter().collect::<String>().trim_end().to_string() + "\u{2026}"; if fonts.layout_width(&t, Family::Sans, size, 400.0, color, Some(w.max(1.0) as f32)).height() as f64 <= one * 2.0 + 1.0 { lo = mid; } else { hi = mid - 1; } }
+    let t: String = chars[..lo].iter().collect::<String>().trim_end().to_string() + "\u{2026}";
+    (fonts.layout_width(&t, Family::Sans, size, 400.0, color, Some(w.max(1.0) as f32)), true)
+}
 /// The note a video's caption and drawings are of when it stands on `at`: the note of exactly that frame; while it
 /// plays, also the last one passed within two and a half seconds (one frame's flash cannot be read).
 pub fn note_at(notes: &[qcv_notes::Note], at: i64, fps: f64, playing: bool) -> Option<usize> {
@@ -212,7 +225,7 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                         if let (Some(i), false) = (cur, hide_notes) { let n = &notes[i]; let exact = n.frame == at;
                             over = Some((if exact { qcv_notes::strokes::parse(n.annotation.as_ref()) } else { vec![] }, Some((n.addressed, n.timecode.clone(), n.text.replace(['\n', '\r'], " "))), r.width() / rec.get("w").and_then(|w| w.as_f64()).unwrap_or(1920.0).max(1.0))); }
                         // the row of the notes' small pictures: the one the video stands on is outlined; a click goes to its frame
-                        if has_row { notes_row(scene, fonts, media, descriptor, &rec, &notes, cur, Rect::new(whole.x0, strip.y1, whole.x1, whole.y1), s); }
+                        if has_row { notes_row(scene, fonts, media, descriptor, &rec, &notes, cur, Rect::new(whole.x0, strip.y1 + mn_layout::VIDEO_CAPTION as f64 * s, whole.x1, whole.y1), s); }   // (under the words' bar, row 577)
                     }
                     // what is not as usual, said small at the strip's right end: a speed other than 1, muted, not looping
                     if let Some(m) = me { let mut x = strip.x1 - 10.0 * s;
@@ -226,13 +239,27 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                     let geo = qcv_annotate::Geo { rect: [r.x0, r.y0, r.width(), r.height()], px_per_src: *per };
                     // the playing block's drawings come from the annotations themselves: the stroke being drawn and the selection with them
                     match (me, ink) { (Some(m), Some(a)) => a.paint(scene, &qcv_annotate::Cur::file(m.frame, rec.get("fps").and_then(|f| f.as_f64()).unwrap_or(24.0)), &geo), _ => for st in strokes { qcv_annotate::draw(scene, st, &geo); } }
-                    if let Some((done, key, words)) = caption { let band = Rect::new(r.x0, r.y1 - 26.0 * s, r.x1, r.y1); if band.y0 > r.y0 { fill(scene, band, Color::BLACK.multiply_alpha(0.62));
-                        let mut x = band.x0 + 10.0 * s;
-                        if *done { if let Some(c) = fonts.icon("check", (12.0 * s) as f32, Color::WHITE) { draw_layout(scene, &c, Affine::translate((x, band.center().y - c.height() as f64 / 2.0))); x += c.width() as f64 + 6.0 * s; } }
-                        let k = fonts.layout(key, Family::Sans, (11.0 * s) as f32, 500.0, Color::WHITE.multiply_alpha(0.75)); draw_layout(scene, &k, Affine::translate((x, band.center().y - k.height() as f64 / 2.0))); x += k.width() as f64 + 10.0 * s;
-                        // a note without words yet says where they go (not while it plays: the band is only passing by)
-                        let (shown, colour) = if words.is_empty() { ("Add a note\u{2026}", Color::WHITE.multiply_alpha(0.5)) } else { (words.as_str(), Color::WHITE) };
-                        if (!words.is_empty() || !me.is_some_and(|m| m.playing)) && band.x1 - x > 40.0 * s { let t = fonts.layout_fit(shown, Family::Sans, (12.0 * s) as f32, 400.0, colour, band.x1 - x - 10.0 * s); draw_layout(scene, &t, Affine::translate((x, band.center().y - t.height() as f64 / 2.0))); } } } };
+                    if let Some((done, key, words)) = caption {
+                        // a block whose clip has notes: the words stand in a bar under the strip, on two lines (row 577; the whole of
+                        // them when the pointer is over it - the window draws that). A card on a canvas has no such bar: there they
+                        // stay one line over the picture's foot.
+                        let under = has_row;
+                        let band = if under { Rect::new(r.x0, r.y1 + mn_layout::VIDEO_STRIP as f64 * s, r.x1, r.y1 + (mn_layout::VIDEO_STRIP + mn_layout::VIDEO_CAPTION) as f64 * s) } else { Rect::new(r.x0, r.y1 - 26.0 * s, r.x1, r.y1) };
+                        if under || band.y0 > r.y0 {
+                            let (ink_c, dim_c) = if under { (text(), text().multiply_alpha(0.6)) } else { (Color::WHITE, Color::WHITE.multiply_alpha(0.75)) };
+                            fill(scene, band, if under { c(t::BACKGROUND_LAYER_1_COLOR) } else { Color::BLACK.multiply_alpha(0.62) });
+                            let line_y = if under { band.y0 + 13.0 * s } else { band.center().y };
+                            let mut x = band.x0 + 10.0 * s;
+                            if *done { if let Some(ic) = fonts.icon("check", (12.0 * s) as f32, ink_c) { draw_layout(scene, &ic, Affine::translate((x, line_y - ic.height() as f64 / 2.0))); x += ic.width() as f64 + 6.0 * s; } }
+                            let k = fonts.layout(key, Family::Sans, (11.0 * s) as f32, 500.0, dim_c); draw_layout(scene, &k, Affine::translate((x, line_y - k.height() as f64 / 2.0))); x += k.width() as f64 + 10.0 * s;
+                            // a note without words yet says where they go (not while it plays: the band is only passing by)
+                            let (shown, colour) = if words.is_empty() { ("Add a note\u{2026}", ink_c.multiply_alpha(0.5)) } else { (words.as_str(), ink_c) };
+                            if (!words.is_empty() || !me.is_some_and(|m| m.playing)) && band.x1 - x > 40.0 * s {
+                                if under { let (tl, _) = two_lines(fonts, shown, (12.0 * s) as f32, colour, band.x1 - x - 10.0 * s); draw_layout(scene, &tl, Affine::translate((x, band.y0 + 5.0 * s))); }
+                                else { let tl = fonts.layout_fit(shown, Family::Sans, (12.0 * s) as f32, 400.0, colour, band.x1 - x - 10.0 * s); draw_layout(scene, &tl, Affine::translate((x, band.center().y - tl.height() as f64 / 2.0))); }
+                            }
+                        }
+                    } };
                 if me.is_some_and(|x| x.shown) { annotate(scene, fonts, &over); continue }
                 if pdf {
                     let (page, pages) = (rec.get("page").and_then(|p| p.as_u64()).unwrap_or(0) + 1, rec.get("pages").and_then(|p| p.as_u64()).unwrap_or(1).max(1));

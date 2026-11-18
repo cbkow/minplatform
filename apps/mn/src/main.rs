@@ -179,7 +179,8 @@ struct Unpack { rx: std::sync::mpsc::Receiver<(u64, Option<Result<std::path::Pat
 struct PdfSel { id: BlockId, a: usize, b: usize, drag: bool }
 #[derive(Default)]
 struct Files { /// handed over with a file to make a note of (`minnotes:///…/x.mnd?note=file:///…`): the collection and the file; `hand_asked`: its opening was asked for once
-    finished: bool, hand: Option<(std::path::PathBuf, std::path::PathBuf)>, hand_asked: bool, /// the handed file's addition: when it lands the collection is saved (the place was chosen for a document)
+    /// the pointer is over a video's words' bar: the bar and the whole of the words (drawn over it when they were cut)
+    cap_over: Option<(Rect, String, String, bool)>, finished: bool, hand: Option<(std::path::PathBuf, std::path::PathBuf)>, hand_asked: bool, /// the handed file's addition: when it lands the collection is saved (the place was chosen for a document)
     hand_save: Option<u64>, /// the camera when Space went down over a canvas (unchanged at its release: a tap - the selected video plays or pauses)
     space_cam: Option<(f64, f64, f64)>,
     /// ink on a picture or a PDF's page in a note (row 325): the armed tool, the gesture under way, the stroke the pointer picked (its block, its id),
@@ -535,8 +536,22 @@ impl App {
         if let Some(f) = self.files.find.as_mut() { f.count = (if self.files.hits.is_empty() { 0 } else { self.files.hit_at + 1 }, self.files.hits.len()); f.layout(&mut g.fonts, Rect::new(self.side_w, self.top, w as f64, h as f64), s); f.paint(scene, &mut g.fonts); if f.animating(now) { g.window.request_redraw(); } }
         if let Some(p) = self.files.link.as_mut() { p.layout(&mut g.fonts, p.anchor + off, Rect::new(0.0, self.top, w as f64, h as f64), s); p.paint(scene, &mut g.fonts); if p.animating(now) { g.window.request_redraw(); } }
         if let Some((id, _, f)) = self.files.note_field.as_mut() { if let Some(r) = l.rect(&self.ed.doc, *id).map(|r| r + off) { let y1 = r.y1 - (mn_layout::VIDEO_STRIP + if l.is_noted(*id) { mn_layout::VIDEO_NOTES } else { 0.0 }) as f64 * s;
-            let band = Rect::new(r.x0, y1 - 26.0 * s, r.x1, y1); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &band);
+            // (a block whose clip has notes: in the words' bar under the strip, row 577; else over the picture's foot)
+            let band = if l.is_noted(*id) { Rect::new(r.x0, y1 + mn_layout::VIDEO_STRIP as f64 * s, r.x1, y1 + (mn_layout::VIDEO_STRIP + mn_layout::VIDEO_CAPTION) as f64 * s) } else { Rect::new(r.x0, y1 - 26.0 * s, r.x1, y1) }; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &band);
             f.layout(&mut g.fonts, band.inset(-2.0 * s), s); f.paint(scene, &mut g.fonts, s); } }
+        // the whole of a note's words while the pointer is over their bar, when two lines did not hold them (row 577)
+        if let Some((bar, words, key, done)) = self.files.cap_over.clone() {
+            let (size, ink) = ((12.0 * s) as f32, paint::text()); let wide = (bar.width() - 20.0 * s).max(40.0);
+            // (the room the bar gives the words: after the tick and the time, as `paint::note` lays them)
+            let lead = 10.0 * s + if done { g.fonts.icon("check", (12.0 * s) as f32, ink).map(|c| c.width() as f64 + 6.0 * s).unwrap_or(0.0) } else { 0.0 } + g.fonts.layout(&key, min_ui::Family::Sans, (11.0 * s) as f32, 500.0, ink).width() as f64 + 10.0 * s;
+            if paint::two_lines(&mut g.fonts, &words, size, ink, bar.width() - lead - 10.0 * s).1 {
+                let full = g.fonts.layout_width(&words, min_ui::Family::Sans, size, 400.0, ink, Some(wide as f32));
+                let panel = Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + full.height() as f64 + 12.0 * s);
+                scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &kurbo::RoundedRect::from_rect(panel, 4.0 * s));
+                scene.stroke(&kurbo::Stroke::new(1.0), kurbo::Affine::IDENTITY, ink.multiply_alpha(0.25), None, &kurbo::RoundedRect::from_rect(panel, 4.0 * s));
+                min_ui::fonts::draw_layout(scene, &full, kurbo::Affine::translate((bar.x0 + 10.0 * s, bar.y0 + 6.0 * s)));
+            }
+        }
         // (on a canvas the note's words are typed along the card's lower edge)
         if let Some(pic) = self.files.note_field.as_ref().map(|x| x.0).and_then(|id| self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).and_then(|cv| cv.video_el(id))).map(|x| x.0) { if let Some((_, _, f)) = self.files.note_field.as_mut() {
             let band = Rect::new(pic.x0, pic.y1 - 26.0 * s, pic.x1, pic.y1); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &band);
@@ -1926,7 +1941,7 @@ impl App {
         Some((id, Rect::new(r.x0, r.y0, r.x1, cut), Rect::new(r.x0, cut, r.x1, r.y1 - row), descriptor.clone()))
     }
     /// The row of a video block's notes (their small pictures), when its clip has notes.
-    fn video_row(&self, id: BlockId) -> Option<Rect> { let (_, _, strip, _) = self.video_boxes(id)?; let l = self.layout.as_ref()?; let s = self.gpu.as_ref()?.window.scale_factor(); l.is_noted(id).then(|| Rect::new(strip.x0, strip.y1, strip.x1, strip.y1 + mn_layout::VIDEO_NOTES as f64 * s)) }
+    fn video_row(&self, id: BlockId) -> Option<Rect> { let (_, _, strip, _) = self.video_boxes(id)?; let l = self.layout.as_ref()?; let s = self.gpu.as_ref()?.window.scale_factor(); l.is_noted(id).then(|| Rect::new(strip.x0, strip.y1 + mn_layout::VIDEO_CAPTION as f64 * s, strip.x1, strip.y1 + mn_layout::VIDEO_NOTES as f64 * s)) }
     /// The playing video's picture as the annotations need it (its rectangle in the window, window px per source px) and
     /// the frame it stands on as a note's address.
     fn video_geo(&self) -> Option<(qcv_annotate::Geo, qcv_annotate::Cur)> {
@@ -2005,6 +2020,19 @@ impl App {
         if let Some(p) = self.player.as_mut() { p.t.pause(); p.t.seek_to_frame(frame); p.awake = Instant::now() + std::time::Duration::from_millis(900); }
         self.video_keep(id, frame);
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The words' bar of a video under the pointer, and the words of the note its frame stands on (row 577).
+    fn caption_over(&mut self, x: f64, y: f64) -> Option<(Rect, String, String, bool)> {
+        if self.files.hide_notes || self.files.note_field.is_some() || self.files.canvas.is_some() { return None }
+        let (id, _, strip, d) = self.video_under(x, y)?;
+        if !self.layout.as_ref()?.is_noted(id) { return None }
+        let s = self.gpu.as_ref()?.window.scale_factor(); let bar = paint::caption_bar(strip, s);
+        if !bar.contains(kurbo::Point::new(x, y)) { return None }
+        let rec: serde_json::Value = serde_json::from_str(&d).ok()?;
+        let playing = self.player.as_ref().filter(|p| p.id == id);
+        let at = playing.map(|p| p.t.current_frame() as i64).unwrap_or(rec.get("frame").and_then(|f| f.as_i64()).unwrap_or(0));
+        let notes = self.media.notes(&d); let i = paint::note_at(&notes, at, rec.get("fps").and_then(|f| f.as_f64()).unwrap_or(24.0), playing.is_some_and(|p| p.t.is_playing()))?;
+        let words = notes[i].text.trim().to_string(); (!words.is_empty()).then(|| (bar, words, notes[i].timecode.clone(), notes[i].addressed))
     }
     fn video_under(&self, x: f64, y: f64) -> Option<(BlockId, Rect, Rect, String)> {
         if self.blank || self.modal() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None }
@@ -3725,6 +3753,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); if let Some(p) = self.player.as_mut() { p.ann.alt = st.alt_key(); p.ann.shift = st.shift_key(); } }
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
+                { let over = self.caption_over(position.x, position.y); if over != self.files.cap_over { self.files.cap_over = over; if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
                 // the pen between two clicks: the piece the next click would add follows the pointer
                 if !self.files.drawing && self.player.as_ref().is_some_and(|p| p.ann.pen_live()) { if let Some((geo, cur)) = self.video_geo() { if let Some(p) = self.player.as_mut() { p.ann.motion(geo.to_norm(position.x, position.y), &cur, &geo, false); } } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
                 if self.files.resize.is_some() { self.resize_to(position.x); return }
@@ -3888,7 +3917,8 @@ impl ApplicationHandler for App {
                         if let (Some((geo, cur)), true) = (self.video_geo(), self.player.as_ref().is_some_and(|p| p.shown)) { if let Some(p) = self.player.as_mut() { p.ann.press(geo.to_norm(position.x, position.y), &cur, &geo); self.files.drawing = true; } }
                         if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                     // the caption of the note the playing video stands on: a click opens its words to be typed
-                    if pic.contains(pt) && position.y > pic.y1 - 26.0 * s && !self.files.hide_notes && !self.player.as_ref().is_some_and(|p| p.id == id && p.t.is_playing()) {
+                    let noted = self.layout.as_ref().is_some_and(|l| l.is_noted(id));
+                    if (if noted { paint::caption_bar(strip, s).contains(pt) } else { pic.contains(pt) && position.y > pic.y1 - 26.0 * s }) && !self.files.hide_notes && !self.player.as_ref().is_some_and(|p| p.id == id && p.t.is_playing()) {
                         let on_note = { let d = self.video_boxes(id).map(|b| b.3).unwrap_or_default(); let rec: serde_json::Value = serde_json::from_str(&d).unwrap_or_default();
                             let at = self.player.as_ref().filter(|p| p.id == id).map(|p| p.t.current_frame() as i64).unwrap_or(rec.get("frame").and_then(|f| f.as_i64()).unwrap_or(0)); self.media.notes(&d).iter().any(|n| n.frame == at) };
                         if on_note { if self.video_start(id, false) { self.note_words(); } return } }

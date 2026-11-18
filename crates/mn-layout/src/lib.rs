@@ -113,8 +113,12 @@ pub const COLUMN_MIN: f32 = 160.0;
 pub const PDF_STRIP: f32 = 36.0;
 /// The height of the strip under a video's picture (play, the counter, the line to scrub on), page px.
 pub const VIDEO_STRIP: f32 = 30.0;
-/// The height of the row of a video's notes (their small pictures) under its strip, page px; only clips with notes have it.
-pub const VIDEO_NOTES: f32 = 62.0;
+/// The height of the bar a note's words stand in under a video's strip (two lines), page px (row 577: they stood in one
+/// line over the picture's foot, cut at its width).
+pub const VIDEO_CAPTION: f32 = 44.0;
+/// The height of what a video with notes has under its strip, page px: the words' bar ([`VIDEO_CAPTION`]), then the row of
+/// the notes' small pictures (62). Only clips with notes have it.
+pub const VIDEO_NOTES: f32 = 62.0 + VIDEO_CAPTION;
 /// A media record's own size, its width on the page when it has one, and whether it is a PDF (its page takes the
 /// width of its place, and a strip sits under it).
 fn media_size(descriptor: &str) -> Option<(f32, f32, Option<f32>, bool, f32)> {
