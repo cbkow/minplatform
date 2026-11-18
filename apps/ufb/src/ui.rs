@@ -602,7 +602,7 @@ impl Ui {
         if note { let mut d = Dialog::new("New minNote", "", vec![("Cancel", Variant::Secondary), ("Create", Variant::Primary)]).with_field("Name", ""); d.show_with("", &mut self.fonts); self.dialog = Some((d, Asked::NewNote(dir))); }
         else {
             let clip = if std::env::var_os("UFB_DEMO").is_some() { String::new() } else { arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default() };
-            let mut d = Dialog::new("New Web Link", "", vec![("Cancel", Variant::Secondary), ("Create", Variant::Primary)]).with_field("Address", "https://\u{2026}").with_field("Name", "Optional: the site's name is used");
+            let mut d = Dialog::new("New Web Link", "", vec![("Cancel", Variant::Secondary), ("Create", Variant::Primary)]).with_field("Address", "https://\u{2026} or an application's own address").with_field("Name", "Optional: the site's name is used");
             d.show_with(if crate::weblink::looks_like(&clip) { clip.trim() } else { "" }, &mut self.fonts); self.dialog = Some((d, Asked::NewLink(dir)));
         }
         self.dialog_preview();
@@ -639,7 +639,7 @@ impl Ui {
             Asked::NewNote(dir) => { let name = d.value_at(0); let file = if name.is_empty() { Err(String::new()) } else { crate::mnote::file_name(&crate::mnote::names_in(dir), &crate::jobview::today(), &name) };
                 d.body = match &file { Ok(f) => format!("File:  {f}"), Err(why) if name.is_empty() || why.is_empty() => "File:".into(), Err(why) => why.clone() }; if let Some(b) = d.buttons.last_mut() { b.enabled = file.is_ok(); } return }
             Asked::NewLink(_) => { let (url, name) = (d.value_at(0), d.value_at(1)); let to = crate::weblink::address(&url);
-                d.body = match &to { Some(u) => format!("File:  {}", crate::weblink::file_name(&name, u)), None if url.is_empty() => "File:".into(), None => "An address of the web: http://, https://, mailto: or a site's name.".into() }; if let Some(b) = d.buttons.last_mut() { b.enabled = to.is_some(); } return }
+                d.body = match &to { Some(u) => format!("File:  {}", crate::weblink::file_name(&name, u)), None if url.is_empty() => "File:".into(), None => "A site's name, or an address with its scheme. A file or a program is not linked to.".into() }; if let Some(b) = d.buttons.last_mut() { b.enabled = to.is_some(); } return }
             _ => {}
         }
         if let Some(name) = made { let ok = ufb_projtype::check_name("name", &name).is_ok(); d.body = if name.is_empty() { "Folder:".into() } else { format!("Folder:  {name}") }; if let Some(b) = d.buttons.last_mut() { b.enabled = ok; } }
