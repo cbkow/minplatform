@@ -81,7 +81,10 @@ pub fn notes_row(scene: &mut Scene, fonts: &mut Fonts, media: &mut Media, descri
     scene.pop_layer();
 }
 /// Where a canvas card's notes row is: under its strip (row 336).
-pub fn card_row(strip: Rect, s: f64) -> Rect { Rect::new(strip.x0, strip.y1 + 4.0 * s, strip.x1, strip.y1 + 4.0 * s + (mn_layout::VIDEO_NOTES - mn_layout::VIDEO_CAPTION) as f64 * s) }   // (a card on a canvas: no words' bar, the row as it was)
+pub fn card_row(strip: Rect, s: f64) -> Rect { let top = card_caption(strip, s).y1 + 4.0 * s; Rect::new(strip.x0, top, strip.x1, top + (mn_layout::VIDEO_NOTES - mn_layout::VIDEO_CAPTION) as f64 * s) }
+/// The bar a note's words stand in under the SELECTED card's strip on a canvas (row 577, the user: "did this caption bar
+/// make it into the canvas too?"), over the row of the notes' small pictures.
+pub fn card_caption(strip: Rect, s: f64) -> Rect { Rect::new(strip.x0, strip.y1 + 4.0 * s, strip.x1, strip.y1 + (4.0 + mn_layout::VIDEO_CAPTION as f64) * s) }
 /// The bar a note's words stand in, under a video's strip (blocks whose clip has notes).
 pub fn caption_bar(strip: Rect, s: f64) -> Rect { Rect::new(strip.x0, strip.y1, strip.x1, strip.y1 + mn_layout::VIDEO_CAPTION as f64 * s) }
 /// Words on at most two lines of `w`, cut with an ellipsis; true when they were cut.
@@ -117,7 +120,8 @@ pub fn video_card(scene: &mut Scene, fonts: &mut Fonts, media: &mut Media, descr
         let cur = note_at(&notes, at, fps, playing);
         match (me.filter(|m| m.shown), ink) { (Some(m), Some(a)) => a.paint(scene, &qcv_annotate::Cur::file(m.frame, fps), &geo), _ => if let Some(n) = cur.map(|i| &notes[i]).filter(|n| n.frame == at) { for st in qcv_notes::strokes::parse(n.annotation.as_ref()) { qcv_annotate::draw(scene, &st, &geo); } } }
         if let Some(n) = cur.map(|i| &notes[i]) { let band = Rect::new(r.x0, r.y1 - 26.0 * s, r.x1, r.y1); let words = n.text.replace(['\n', '\r'], " ");
-            if band.y0 > r.y0 + 30.0 * s && r.width() > 160.0 * s && !words.is_empty() { fill(scene, band, Color::BLACK.multiply_alpha(0.62)); let mut x = band.x0 + 10.0 * s;
+            // (the selected card has its words in the bar under its strip; any other card, one line over its foot)
+            if strip.is_none() && band.y0 > r.y0 + 30.0 * s && r.width() > 160.0 * s && !words.is_empty() { fill(scene, band, Color::BLACK.multiply_alpha(0.62)); let mut x = band.x0 + 10.0 * s;
                 let k = fonts.layout(&n.timecode, Family::Sans, (11.0 * s) as f32, 500.0, Color::WHITE.multiply_alpha(0.75)); draw_layout(scene, &k, Affine::translate((x, band.center().y - k.height() as f64 / 2.0))); x += k.width() as f64 + 10.0 * s;
                 if band.x1 - x > 40.0 * s { let t = fonts.layout_fit(&words, Family::Sans, (12.0 * s) as f32, 400.0, Color::WHITE, band.x1 - x - 10.0 * s); draw_layout(scene, &t, Affine::translate((x, band.center().y - t.height() as f64 / 2.0))); } } }
     }
@@ -130,6 +134,13 @@ pub fn video_card(scene: &mut Scene, fonts: &mut Fonts, media: &mut Media, descr
         for n in notes.iter() { let nx = track.x0 + track.width() * (n.frame.clamp(0, frames - 1) as f64 / (frames - 1).max(1) as f64); fill(scene, Rect::new(nx - s, strip.center().y - 5.0 * s, nx + s, strip.center().y + 5.0 * s), note_mark(n.addressed)); }
         scene.fill(Fill::NonZero, Affine::IDENTITY, text(), None, &RoundedRect::from_rect(Rect::new(x - 1.5 * s, strip.center().y - 7.0 * s, x + 1.5 * s, strip.center().y + 7.0 * s), 1.5 * s)); }
     // the selected card's notes: their small pictures in a row under the strip (a click goes to a note's frame)
+    if !notes.is_empty() {
+        let bar = card_caption(strip, s); scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &RoundedRect::from_rect(bar, 6.0 * s));
+        if let Some(n) = note_at(&notes, at, fps, playing).map(|i| &notes[i]) { let mut x = bar.x0 + 10.0 * s; let y = bar.y0 + 13.0 * s;
+            if n.addressed { if let Some(ic) = fonts.icon("check", (12.0 * s) as f32, text()) { draw_layout(scene, &ic, Affine::translate((x, y - ic.height() as f64 / 2.0))); x += ic.width() as f64 + 6.0 * s; } }
+            let k = fonts.layout(&n.timecode, Family::Sans, (11.0 * s) as f32, 500.0, dim()); draw_layout(scene, &k, Affine::translate((x, y - k.height() as f64 / 2.0))); x += k.width() as f64 + 10.0 * s;
+            if bar.x1 - x > 40.0 * s && !n.text.trim().is_empty() { let (tl, _) = two_lines(fonts, &n.text, (12.0 * s) as f32, text(), bar.x1 - x - 10.0 * s); draw_layout(scene, &tl, Affine::translate((x, bar.y0 + 5.0 * s))); } }
+    }
     if !notes.is_empty() { let row = card_row(strip, s); scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &RoundedRect::from_rect(row, 6.0 * s)); notes_row(scene, fonts, media, descriptor, &rec, &notes, note_at(&notes, at, fps, playing), row.inset(-4.0 * s).with_origin((row.x0 + 6.0 * s, row.y0)).with_size((row.width() - 12.0 * s, row.height())), s); }
     if let Some(m) = me.filter(|m| m.muted) { let _ = m; if let Some(i) = fonts.icon("speaker-slash", (13.0 * s) as f32, dim()) { draw_layout(scene, &i, Affine::translate((strip.x1 - 10.0 * s - i.width() as f64, strip.center().y - i.height() as f64 / 2.0))); } }
 }

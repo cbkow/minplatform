@@ -2023,10 +2023,13 @@ impl App {
     }
     /// The words' bar of a video under the pointer, and the words of the note its frame stands on (row 577).
     fn caption_over(&mut self, x: f64, y: f64) -> Option<(Rect, String, String, bool)> {
-        if self.files.hide_notes || self.files.note_field.is_some() || self.files.canvas.is_some() { return None }
-        let (id, _, strip, d) = self.video_under(x, y)?;
-        if !self.layout.as_ref()?.is_noted(id) { return None }
-        let s = self.gpu.as_ref()?.window.scale_factor(); let bar = paint::caption_bar(strip, s);
+        if self.files.hide_notes || self.files.note_field.is_some() { return None }
+        let s = self.gpu.as_ref()?.window.scale_factor();
+        // on a canvas: the selected card's bar; in a note: the bar of the block under the pointer, when its clip has notes
+        let on_canvas = self.files.canvas.is_some() && self.files.card.is_none();
+        let (id, _, strip, d) = if on_canvas { self.video_current().and_then(|id| self.video_boxes(id))? } else { self.video_under(x, y)? };
+        if !on_canvas && !self.layout.as_ref()?.is_noted(id) { return None }
+        let bar = if on_canvas { paint::card_caption(strip, s) } else { paint::caption_bar(strip, s) };
         if !bar.contains(kurbo::Point::new(x, y)) { return None }
         let rec: serde_json::Value = serde_json::from_str(&d).ok()?;
         let playing = self.player.as_ref().filter(|p| p.id == id);
