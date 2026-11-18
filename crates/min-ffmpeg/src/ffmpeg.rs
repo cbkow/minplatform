@@ -178,7 +178,9 @@ impl Session {
                 let ext = stream_extent::scan_stream_extent(path, stream_idx, 512 << 20);
                 if ext.ok { frame_count = ext.frames; if duration_secs <= 0.0 { duration_secs = ext.duration_us as f64 * 1e-6; } }
             }
-            let info = SessionInfo { width: (*cctx).width as u32, height: (*cctx).height as u32, frame_count, codec_name, codec_short: cstr((*codec).name), pix_fmt, hw_accel, source_timecode, drop_frame, time_base: (tb.num, tb.den), frame_rate: (fr_num, fr_den), intra_only, meta: meta_from(&*cctx, format, RangeOverride::Auto), duration_secs, tags: {
+            let info = SessionInfo { width: (*cctx).width as u32, height: (*cctx).height as u32, frame_count, codec_name, codec_short: cstr((*codec).name), pix_fmt, hw_accel, source_timecode, drop_frame, time_base: (tb.num, tb.den), frame_rate: (fr_num, fr_den), intra_only, meta: { let mut m = meta_from(&*cctx, format, RangeOverride::Auto);
+                // the pixel aspect as the container has it too (a QuickTime `pasp` never reaches the codec context: an anamorphic ProRes read 1:1 here while the Inspector, which asks this same question, said 2:1)
+                let g = ff::av_guess_sample_aspect_ratio(fmt, st, ptr::null_mut()); if g.num > 0 && g.den > 0 { m.sar = (g.num as u32, g.den as u32); } m }, duration_secs, tags: {
                 let n = |p: *const std::ffi::c_char| { let v = cstr(p); if v == "unknown" || v == "unspecified" { String::new() } else { v } };
                 (n(ff::av_color_transfer_name((*codecpar).color_trc)), n(ff::av_color_primaries_name((*codecpar).color_primaries)), n(ff::av_color_space_name((*codecpar).color_space)))
             } };

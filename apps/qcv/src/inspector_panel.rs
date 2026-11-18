@@ -573,7 +573,6 @@ impl InspectorPanel {
     pub fn chip_rect(&self, label: &str, i: usize) -> Option<Rect> { self.groups.iter().flat_map(|g| g.items.iter()).find_map(|it| match it { Item::Chips(c) if c.id == label => c.group.buttons.get(i).map(|b| b.rect), _ => None }) }
     pub fn animating(&self, now: Instant) -> bool { self.groups.iter().any(|g| g.section.animating(now) || g.items.iter().any(|it| matches!(it, Item::Chips(c) if c.group.animating(now)))) }
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant) {
-        for g in self.groups.iter_mut() { if g.shown && g.section.expanded { for it in g.items.iter_mut() { if let Item::Field(f) = it { f.field.paint(scene, fonts, scale); } } } }
         for (gi, g) in self.groups.iter().enumerate() {
             if !g.shown { continue }
             let bottom = if g.section.expanded { g.rects.last().map(|r| r.y1 + t::SPACING_100 as f64 * scale).unwrap_or(g.section.rect.y1) } else { g.section.rect.y1 };
@@ -678,5 +677,7 @@ impl InspectorPanel {
                 }
             }
         }
+        // the text fields LAST: each paints its own well, and a section's tile drawn after it covered it (Custom's two fields were there, unseen)
+        for g in self.groups.iter_mut() { if g.shown && g.section.expanded { for it in g.items.iter_mut() { if let Item::Field(f) = it { f.field.paint(scene, fonts, scale); } } } }
     }
 }
