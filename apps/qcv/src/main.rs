@@ -1339,7 +1339,8 @@ impl App {
                         let (tw, th) = if area.width() * 9.0 / 16.0 <= area.height() { (area.width(), area.width() * 9.0 / 16.0) } else { (area.height() * 16.0 / 9.0, area.height()) };
                         let tile = kurbo::Rect::from_center_size(area.center(), (tw.floor(), th.floor()));
                         min_ui::paint::rect(scene, tile, t::BACKGROUND_LAYER_1_COLOR);
-                        if let Some(ic) = g.fonts.icon("waveform", (th * 0.28) as f32, min_ui::paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT)) { min_ui::fonts::draw_layout(scene, &ic, kurbo::Affine::translate((tile.center().x - ic.width() as f64 / 2.0, tile.center().y - ic.height() as f64 / 2.0))); }
+                        if let Some(ic) = g.fonts.icon("waveform", (th * 0.12).clamp(24.0 * scale, 96.0 * scale) as f32,   // (UFB's sign is 96 px in a window-high view, about a tenth of its height: 0.28 of the tile was far larger - the user 2026-11-18)
+                             min_ui::paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT)) { min_ui::fonts::draw_layout(scene, &ic, kurbo::Affine::translate((tile.center().x - ic.width() as f64 / 2.0, tile.center().y - ic.height() as f64 / 2.0))); }
                     }
                 }
                 if self.annot.active && self.dual.is_none() { if let (Some(cur), Some(geo)) = (live::note_cur(self.live.as_ref(), self.player.as_ref(), &self.annot.notes, ""), annot_geo(&g.presenter.engine)) { self.annot.paint(scene, &cur, &geo); } }
