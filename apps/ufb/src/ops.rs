@@ -48,6 +48,8 @@ pub enum Op {
     /// A folder named by the day (`YYMMDD`) or the time of day (`HHMM`), row 589: `base`, or `base` with the first
     /// of a-z that is free (1.4.2's "New Date Folder" and "New Time Folder").
     NewStamped { dir: PathBuf, base: String },
+    /// 1.4.2's "New UFB Folder" (row 590): `<YYMMDD><letter>_<label>`, the letter the first no FOLDER of the day carries.
+    NewDated { dir: PathBuf, label: String },
     Rename { path: PathBuf, name: String },
     /// Several are renamed in one step (row 528): each entry and its new name. All of them, or none.
     RenameMany { pairs: Vec<(PathBuf, String)> },
@@ -421,7 +423,13 @@ pub struct Engine { pub guard: Guard, /// what can be undone, each with the oper
 /// An operation's name as the Edit menu says it after "Redo".
 /// The names a stamped folder tries, in order: the stamp, then the stamp with a letter (1.4.2's `find_available_path`).
 pub fn stamped_names(base: &str) -> Vec<String> { std::iter::once(base.to_string()).chain(('a'..='z').map(|c| format!("{base}{c}"))).collect() }
-fn op_name(op: &Op) -> &'static str { match op { Op::NewFolder { .. } | Op::NewStamped { .. } => "New Folder", Op::Rename { .. } | Op::RenameMany { .. } => "Rename", Op::Duplicate { .. } | Op::DuplicateSequence { .. } => "Duplicate", Op::Trash { .. } => "Move to Trash", Op::Delete { .. } => "Delete", Op::Transfer { mv, .. } => if *mv { "Move" } else { "Copy" }, Op::NewJob { .. } => "New Job", Op::AddItem { .. } => "Add Item", Op::NewLink { .. } => "New Web Link", Op::NewNote { .. } => "New minNote", Op::Note { .. } | Op::Undo | Op::Redo => "" } }
+/// The name "New UFB Folder" would give `label` in `dir` today (the question shows this very name).
+pub fn dated_folder_name(dir: &Path, label: &str) -> Result<String, String> {
+    let label = label.trim(); ufb_projtype::check_name("name", label)?;
+    let folders: Vec<String> = std::fs::read_dir(dir).map_err(|e| format!("{}: {}", dir.display(), plain(&e)))?.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    ufb_projtype::dated_name(&folders, &crate::jobview::today(), label)
+}
+fn op_name(op: &Op) -> &'static str { match op { Op::NewFolder { .. } | Op::NewStamped { .. } | Op::NewDated { .. } => "New Folder", Op::Rename { .. } | Op::RenameMany { .. } => "Rename", Op::Duplicate { .. } | Op::DuplicateSequence { .. } => "Duplicate", Op::Trash { .. } => "Move to Trash", Op::Delete { .. } => "Delete", Op::Transfer { mv, .. } => if *mv { "Move" } else { "Copy" }, Op::NewJob { .. } => "New Job", Op::AddItem { .. } => "Add Item", Op::NewLink { .. } => "New Web Link", Op::NewNote { .. } => "New minNote", Op::Note { .. } | Op::Undo | Op::Redo => "" } }
 impl Engine {
     pub fn new(guard: Guard) -> Engine { Engine { guard, undo: vec![], redo: vec![], running: None } }
     /// What Undo would undo, as the Edit menu names it.
@@ -589,6 +597,15 @@ impl Engine {
                 }
                 rep.error = Some(format!("Every name for {base} is taken ({base}, {base}a to {base}z).")); rep
             }
+            Op::NewDated { dir, label } => {
+                let mut rep = Report { kind: Some(Kind::NewStamped), ..Default::default() };
+                if let Err(e) = self.guard.check(&dir.join("x")) { rep.error = Some(e); return rep }
+                match dated_folder_name(&dir, &label) {
+                    Ok(name) => { let p = dir.join(name); match std::fs::create_dir(&p) { Ok(()) => { rep.changed.push(dir); rep.made.push(p.clone()); self.done(Record::NewFolder(p)); } Err(e) => rep.error = Some(format!("The folder could not be made: {}.", plain(&e))) } }
+                    Err(e) => rep.error = Some(e),
+                }
+                rep
+            }
             // (each is undone as what a worker made: to the Trash)
             Op::NewLink { dir, name, url } => {
                 let mut rep = Report { kind: Some(Kind::NewLink), ..Default::default() };
@@ -703,7 +720,7 @@ static SHARED: OnceLock<Shared> = OnceLock::new();
 fn label_of(op: &Op) -> String {
     // (one item is said by its name: the tasks' panel shows several of these under one another)
     let what = |paths: &[PathBuf]| if paths.len() == 1 { format!("\u{201c}{}\u{201d}", name_of(&paths[0])) } else { format!("{} items", paths.len()) };
-    match op { Op::NewFolder { .. } | Op::NewStamped { .. } => "New folder".into(), Op::Rename { .. } => "Rename".into(), Op::RenameMany { pairs } => format!("Rename {} items", pairs.len()), Op::Duplicate { paths } => format!("Duplicate {}", what(paths)), Op::DuplicateSequence { frames } => format!("Duplicate a sequence of {} frames", frames.len()), Op::Trash { paths } => format!("Move {} to the Trash", what(paths)), Op::Delete { paths } => format!("Delete {}", what(paths)),
+    match op { Op::NewFolder { .. } | Op::NewStamped { .. } | Op::NewDated { .. } => "New folder".into(), Op::Rename { .. } => "Rename".into(), Op::RenameMany { pairs } => format!("Rename {} items", pairs.len()), Op::Duplicate { paths } => format!("Duplicate {}", what(paths)), Op::DuplicateSequence { frames } => format!("Duplicate a sequence of {} frames", frames.len()), Op::Trash { paths } => format!("Move {} to the Trash", what(paths)), Op::Delete { paths } => format!("Delete {}", what(paths)),
         Op::Transfer { paths, dest, mv } => format!("{} {} to \u{201c}{}\u{201d}", if *mv { "Move" } else { "Copy" }, what(paths), name_of(dest)), Op::Note { .. } => "Note".into(), Op::NewJob { .. } => "New job".into(), Op::AddItem { name, .. } => format!("Add \u{201c}{name}\u{201d}"), Op::NewLink { .. } => "New web link".into(), Op::NewNote { .. } => "New minNote".into(), Op::Undo => "Undo".into(), Op::Redo => "Redo".into() }
 }
 

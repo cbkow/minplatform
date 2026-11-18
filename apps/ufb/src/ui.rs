@@ -55,7 +55,8 @@ enum Asked { /// delete these for good
     Extension { path: PathBuf, typed: String, kept: String }, /// the engine's question about a name that is taken (its number)
     Conflict(u64), /// a new job in this jobs folder (its number, its name); a new item in this section's folder
     NewJob(PathBuf), AddItem(PathBuf), /// a web link's file, a minNotes note, in this folder (rows 585, 587)
-    NewLink(PathBuf), NewNote(PathBuf), /// a share to add (its address, or a folder); a share's name
+    NewLink(PathBuf), NewNote(PathBuf), /// 1.4.2's "New UFB Folder" in this folder (row 590)
+    NewDated(PathBuf), /// a share to add (its address, or a folder); a share's name
     AddShare, RenameShare(usize), ShareLetter(usize), /// quit although tasks run or wait
     Quit, /// several entries to rename in one step (each: its path, whether it is a folder)
     BatchRename(Vec<(PathBuf, bool)>), /// the password of this archive
@@ -576,6 +577,15 @@ impl Ui {
     }
     /// A link of a Links cell (row 584): an address of the web goes to the system; one of the application's own is gone to here.
     fn open_link(&mut self, link: &str) { if crate::weblink::own(link) { self.open_text(link); } else { crate::sysopen::open_url(link); } }
+    /// "New UFB Folder" (row 590, 1.4.2's): a label; the folder is `<YYMMDD><letter>_<label>`.
+    fn ask_new_dated(&mut self) {
+        use min_ui::{dialog::Dialog, text_button::Variant};
+        if self.dialog.is_some() || self.prefs.is_some() { return }
+        let dir = self.pane().path().to_path_buf();
+        if !crate::ops::allowed_in(&dir) { self.toast.show("This build changes nothing outside the folders it was started with.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
+        let mut d = Dialog::new("New UFB Folder", "", vec![("Cancel", Variant::Secondary), ("Create", Variant::Primary)]).with_field("Name", ""); d.show_with("", &mut self.fonts);
+        self.dialog = Some((d, Asked::NewDated(dir))); self.dialog_preview();
+    }
     /// "New Date Folder" / "New Time Folder" (row 589, 1.4.2's): `YYMMDD` or `HHMM` by this machine's clock, made at once.
     fn new_stamped(&mut self, time: bool) {
         if self.dialog.is_some() || self.prefs.is_some() { return }
@@ -624,6 +634,8 @@ impl Ui {
             return
         }
         match asked {
+            Asked::NewDated(dir) => { let name = d.value_at(0); let made = if name.is_empty() { Err(String::new()) } else { crate::ops::dated_folder_name(dir, &name) };
+                d.body = match &made { Ok(f) => format!("Folder:  {f}"), Err(why) if why.is_empty() => "Folder:".into(), Err(why) => why.clone() }; if let Some(b) = d.buttons.last_mut() { b.enabled = made.is_ok(); } return }
             Asked::NewNote(dir) => { let name = d.value_at(0); let file = if name.is_empty() { Err(String::new()) } else { crate::mnote::file_name(&crate::mnote::names_in(dir), &crate::jobview::today(), &name) };
                 d.body = match &file { Ok(f) => format!("File:  {f}"), Err(why) if name.is_empty() || why.is_empty() => "File:".into(), Err(why) => why.clone() }; if let Some(b) = d.buttons.last_mut() { b.enabled = file.is_ok(); } return }
             Asked::NewLink(_) => { let (url, name) = (d.value_at(0), d.value_at(1)); let to = crate::weblink::address(&url);
@@ -1317,6 +1329,7 @@ impl Ui {
             // (through the engine, as every change to the disk: one at a time, behind the belt, and undone by Undo)
             Asked::NewJob(parent) => if button == 1 { crate::ops::submit(self.id, crate::ops::Op::NewJob { parent, number: d.value_at(0), name: d.value_at(1) }); },
             Asked::AddItem(dir) => if button == 1 { crate::ops::submit(self.id, crate::ops::Op::AddItem { dir, name: d.value_at(0) }); },
+            Asked::NewDated(dir) => if button == 1 { crate::ops::submit(self.id, crate::ops::Op::NewDated { dir, label: d.value_at(0) }); },
             Asked::NewLink(dir) => if button == 1 { crate::ops::submit(self.id, crate::ops::Op::NewLink { dir, url: d.value_at(0), name: d.value_at(1) }); },
             Asked::NewNote(dir) => if button == 1 { crate::ops::submit(self.id, crate::ops::Op::NewNote { dir, name: d.value_at(0) }); },
             Asked::SyncSet => if button == 1 { let (farm, node, only) = (d.value_at(0), d.value_at(1), if crate::identity::belt() { d.value_at(2) } else { String::new() }); crate::settings::with(|s| { s.set_str("sync/farm", &farm); s.set_str("sync/node", &node); s.set_str("sync/only", &only); s.set_bool("sync/on", true); }); self.apply_sync(); },
@@ -1588,6 +1601,7 @@ impl Ui {
             crate::ctxmenu::ENCLOSING => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; self.show_enclosing(); },
             SPLIT => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.panes[i].split_chosen(); },
             GROUP => if let Some(i) = pane.filter(|i| *i < self.shown()) { if !self.panes[i].group_chosen() { self.toast.show("These cannot be one sequence: their names differ in more than a number.", min_ui::toast::ToastKind::Notice, Instant::now()); } },
+            crate::ctxmenu::NEW_UFB => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.ask_new_dated(); }
             crate::ctxmenu::NEW_DATE | crate::ctxmenu::NEW_TIME => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.new_stamped(id == crate::ctxmenu::NEW_TIME); }
             crate::ctxmenu::NEW_LINK | crate::ctxmenu::NEW_NOTE => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.ask_new_file(id == crate::ctxmenu::NEW_NOTE); }
             REFRESH | RENAME | TRASH | NEW_FOLDER | DUPLICATE | COPY | PASTE | PREVIEW => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; }
@@ -1996,6 +2010,7 @@ impl Ui {
             "subscribe" => self.subscribe(PathBuf::from(arg), true), "unsubscribe" => self.subscribe(PathBuf::from(arg), false),
             "newjob" => { self.ask_new_job(); if let Some((d, _)) = self.dialog.as_mut() { let (n, name) = arg.split_once('|').unwrap_or((arg, "")); d.fields[0].1.set_text(n); d.fields[1].1.set_text(name); } self.dialog_preview(); if self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
             // `newlink:<address>|<name>` and `newnote:<name>` answer the question at once; `newlinkask:<address>|<name>` and `newnoteask:<name>` leave it open
+            "newufb" | "newufbask" => { self.ask_new_dated(); if let Some((d, _)) = self.dialog.as_mut() { d.fields[0].1.set_text(arg); } self.dialog_preview(); if word == "newufb" && self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
             "newdate" => self.new_stamped(false), "newtime" => self.new_stamped(true),
             "newlink" | "newlinkask" => { self.ask_new_file(false); if let Some((d, _)) = self.dialog.as_mut() { let (u, name) = arg.split_once('|').unwrap_or((arg, "")); d.fields[0].1.set_text(u); d.fields[1].1.set_text(name); } self.dialog_preview(); if word == "newlink" && self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
             "newnote" | "newnoteask" => { self.ask_new_file(true); if let Some((d, _)) = self.dialog.as_mut() { d.fields[0].1.set_text(arg); } self.dialog_preview(); if word == "newnote" && self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
