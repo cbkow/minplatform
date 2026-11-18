@@ -181,7 +181,8 @@ struct PdfSel { id: BlockId, a: usize, b: usize, drag: bool }
 struct Files { /// handed over with a file to make a note of (`minnotes:///…/x.mnd?note=file:///…`): the collection and the file; `hand_asked`: its opening was asked for once
     /// the pointer is over a video's words' bar: the bar and the whole of the words (drawn over it when they were cut)
     cap_over: Option<(Rect, String, String, bool)>, finished: bool, hand: Option<(std::path::PathBuf, std::path::PathBuf)>, hand_asked: bool, /// the handed file's addition: when it lands the collection is saved (the place was chosen for a document)
-    hand_save: Option<u64>, /// the camera when Space went down over a canvas (unchanged at its release: a tap - the selected video plays or pauses)
+    hand_save: Option<u64>, /// a notes folder's pictures still to be put in the note made of it, one after the other: each with its place in the note as it stood before any picture; `hand_in`: how many are in
+    hand_queue: std::collections::VecDeque<(std::path::PathBuf, usize)>, hand_in: usize, /// the camera when Space went down over a canvas (unchanged at its release: a tap - the selected video plays or pauses)
     space_cam: Option<(f64, f64, f64)>,
     /// ink on a picture or a PDF's page in a note (row 325): the armed tool, the gesture under way, the stroke the pointer picked (its block, its id),
     /// and - worked out between events - the current block that can be drawn on (its frame in the window, its record) and what the toolbar shows of it
@@ -1231,8 +1232,45 @@ impl App {
         if self.files.hand_asked { self.files.hand = None; self.files.hand_asked = false; return }
         self.files.hand_asked = true; self.request_close(Pending::Make(col));
     }
+    /// A note of a QCView notes folder (a stream's notes, QCView's Open in minNotes - row 578): the stream's name as its
+    /// heading, then every note - when it was made, its picture (the one with the drawings when there is one), its words.
+    /// The pictures are put in one after the other (each lands on a thread), and the collection is saved after the last.
+    fn hand_stream(&mut self, dir: std::path::PathBuf) {
+        let (header, notes) = match qcv_notes::io::load_at(&dir) { Ok(x) => x, Err(e) => { eprintln!("hand-over: {e}"); self.notice = Some(("The notes in that folder could not be read".into(), Instant::now() + std::time::Duration::from_secs(6))); return } };
+        if notes.is_empty() { self.notice = Some(("That folder has no notes yet".into(), Instant::now() + std::time::Duration::from_secs(6))); return }
+        let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) else { return };
+        let name = header.get("stream").and_then(|v| v.as_str()).filter(|n| !n.trim().is_empty()).map(str::to_string).unwrap_or_else(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        let mut queue = std::collections::VecDeque::new();
+        let made = st.col.create(None, mn_store::DocKind::Note, &name).and_then(|id| {
+            let mut d = Doc::new(); let bad = |e| mn_store::Error::Corrupt(format!("{e:?}")); let mut at = 0usize;
+            d.insert(None, at, BlockId::new(), Kind::Heading { level: 1 }, name.clone()).map_err(bad)?; at += 1;
+            for n in &notes {
+                // when: the host's timecode when the stream carried one, else the time of day it was captured, else the key
+                let when = if !n.host_timecode.is_empty() { n.host_timecode.clone() } else { n.captured_at.split('T').nth(1).map(|t| t.chars().take(8).collect::<String>()).filter(|t| !t.is_empty()).unwrap_or_else(|| n.timecode.clone()) };
+                d.insert(None, at, BlockId::new(), Kind::Heading { level: 3 }, if n.addressed { format!("{when} \u{2014} addressed") } else { when }).map_err(bad)?; at += 1;
+                let images = qcv_notes::io::images_dir(&dir);
+                let pic = [images.join(qcv_notes::io::annotated_filename(&n.timecode)), dir.join(&n.image)].into_iter().find(|p| p.is_file());
+                if let Some(p) = pic { queue.push_back((p, at)); }
+                d.insert(None, at, BlockId::new(), Kind::Paragraph, n.text.clone()).map_err(bad)?; at += 1;
+            }
+            st.col.save_note(id, &d).map(|_| id) });
+        let id = match made { Ok(id) => id, Err(e) => { eprintln!("hand-over: {e}"); self.notice = Some(("A note could not be made of the folder".into(), Instant::now() + std::time::Duration::from_secs(6))); return } };
+        st.unpublished = true; st.edited_since_stage = true; sb.set_tree(&st.col); sb.selected = Some(id); sb.focused = false; self.changed.insert(id);
+        self.notice = Some((format!("Made a note of {name}: {} note(s)", notes.len()), Instant::now() + std::time::Duration::from_secs(6)));
+        println!("hand-over: a note of the folder {name}, {} note(s), {} picture(s)", notes.len(), queue.len());
+        self.reading = false; self.open_note(id);
+        self.files.hand_queue = queue; self.files.hand_in = 0; self.hand_next();
+    }
+    /// The next picture of a handed notes folder goes into its note; none left: the collection is saved.
+    fn hand_next(&mut self) {
+        match self.files.hand_queue.pop_front() {
+            Some((p, at)) => { let index = at + self.files.hand_in; self.add_files(vec![p], mn_edit::Drop { parent: None, index, depth: None, beside: None }); self.files.hand_save = Some(self.files.token); }
+            None => { self.files.hand_save = None; self.save(); }
+        }
+    }
     /// A new note of one file: the file's name as its heading, the file under it (a video is its player), opened.
     fn hand_note(&mut self, media: std::path::PathBuf) {
+        if media.is_dir() { self.hand_stream(media); return }
         let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) else { return };
         let name = media.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let made = st.col.create(None, mn_store::DocKind::Note, &name).and_then(|id| {
@@ -1908,7 +1946,7 @@ impl App {
                 if at.index == usize::MAX { if let Some(cv) = self.files.canvas.as_mut() { cv.add_media(records, self.files.canvas_at.take()); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                 let kinds = records.into_iter().map(|descriptor| Kind::Media { descriptor }).collect();
                 match self.ed.insert_blocks(&at, kinds, now) { Ok(d) => { self.follow = true; self.apply(d) } Err(e) => eprintln!("drop: {e:?}") }
-                if self.files.hand_save == Some(token) { self.files.hand_save = None; self.save(); }
+                if self.files.hand_save == Some(token) { self.files.hand_in += 1; self.hand_next(); }
             }
             // a picture named by an address has arrived: the blocks that name it point at the kept copy instead. Not a
             // step of the history (nobody did it); a redo that brings the address back is answered the same way
@@ -4072,7 +4110,14 @@ fn handed(item: &str) -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>
     let Some(rest) = item.strip_prefix("minnotes:") else { return (Some(item.into()), None) };
     let (body, query) = rest.split_once('?').unwrap_or((rest, ""));
     let note = query.split('&').find_map(|kv| kv.strip_prefix("note=")).and_then(min_paths::url::file_url_to_path).map(std::path::PathBuf::from);
-    (min_paths::url::file_url_to_path(&format!("file:{body}")).map(Into::into), note)
+    let path: Option<std::path::PathBuf> = min_paths::url::file_url_to_path(&format!("file:{body}")).map(Into::into);
+    // a FOLDER that holds QCView's notes (a stream's, handed by QCView's Open in minNotes): its collection is inside it,
+    // named for it, and the folder is what a note is made of (row 578; minNotes 3 answered "not a collection" until then)
+    if let (None, Some(dir)) = (&note, path.as_ref().filter(|p| p.is_dir() && p.join("notes.json").is_file())) {
+        let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Notes".into());
+        return (Some(dir.join(format!("{name}.mnd"))), Some(dir.clone()))
+    }
+    (path, note)
 }
 fn open_untitled(left: Option<mn_store::staging::Leftover>) -> Result<(Store, Doc, bool), String> {
     use mn_store::staging; let root = sessions_root(); std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
