@@ -254,7 +254,8 @@ impl App {
         if let Some(p) = self.player.as_mut() {
             p.set_range_override(match item.video_range_override { qcv_project::VideoRange::Full => qcv_player::RangeOverride::Full, qcv_project::VideoRange::Limited => qcv_player::RangeOverride::Limited, _ => qcv_player::RangeOverride::Auto });
             if let Some(s) = p.decoder().as_sequence() { s.cache().set_stride(item.image_seq.cache_stride); }   // QCView `startImageSequence` applies the item's stride
-            p.audio.set_routing_mode(match item.audio_routing_mode { qcv_project::AudioRoutingMode::Downmix5_1 => qcv_player::RoutingMode::Downmix5_1, qcv_project::AudioRoutingMode::Stereo7_8 => qcv_player::RoutingMode::Stereo7_8, _ => qcv_player::RoutingMode::Auto });
+            // a playlist's clips each keep their own file's routing; any other item has the one
+            if item.media_type == qcv_project::MediaType::Playlist { let by = clip_routing(&self.project, &p.timeline); p.set_clip_routing(by); } else { p.audio.set_routing_mode(routing_of(&item)); }
             // QCView's handler ends with seekToFrame(0): the first frame the decoder produced carried Auto, and the player opens paused — re-decode it with the item's range in force
             p.seek_to_frame(0);
             // QCView `startImageSequence`: the detector's gaps seed the failed set, so the timeline's red ticks show before any IO
@@ -698,7 +699,7 @@ impl App {
     fn apply_item_to_side(&mut self, side: qcv_player::Side) {
         let slot = side as usize; let id = self.slot_item(slot);
         let Some(item) = self.project.item(&id).cloned() else { return };
-        if let Some(t) = self.dual.as_mut().and_then(|d| d.side_mut(side)) { t.set_range_override(range_of(&item)); t.audio.set_routing_mode(routing_of(&item)); }
+        if let Some(t) = self.dual.as_mut().and_then(|d| d.side_mut(side)) { t.set_range_override(range_of(&item)); if item.media_type == qcv_project::MediaType::Playlist { let by = clip_routing(&self.project, &t.timeline); t.set_clip_routing(by); } else { t.audio.set_routing_mode(routing_of(&item)); } }
         if let Some(g) = self.gpu.as_mut() { if let Some(en) = color::slot_engine(g, slot, true) { en.set_geometry(min_present::engine::Geometry { par: par_of(&item), rotation: rotation_of(&item) }); en.set_transfer_override(transfer_choice(item.transfer_override)); } g.content_set = None; g.insp_seen = (9, String::new()); }
         if !item.path.is_empty() && item.media_type != qcv_project::MediaType::LiveStream { self.meta.request_video_extraction(&id, &item.path); self.meta.request_adobe_extraction(&id, &item.path); }
     }
@@ -1307,6 +1308,23 @@ impl App {
                     }
                 }
                 // the frame's annotations, the live stroke, the selection (row 215: while annotating, single view)
+                // a sound has no picture: a 16:9 grey tile with the family's sign for sound (UFB's), where cover art would stand
+                // (the user 2026-11-18). Single view; side by side, each half whose side is a sound.
+                {
+                    let mut tiles: Vec<kurbo::Rect> = vec![];
+                    match self.dual.as_ref() {
+                        None => if self.player.as_ref().is_some_and(|p| p.is_audio_only()) { tiles.push(content); },
+                        Some(d) => if g.presenter.engine.dual().is_some_and(|e| e.mode == CompareMode::SideBySide) { let mid = content.center().x;
+                            if d.side(qcv_player::Side::A).is_some_and(|t| t.is_audio_only()) { tiles.push(kurbo::Rect::new(content.x0, content.y0, mid, content.y1)); }
+                            if d.side(qcv_player::Side::B).is_some_and(|t| t.is_audio_only()) { tiles.push(kurbo::Rect::new(mid, content.y0, content.x1, content.y1)); } },
+                    }
+                    for area in tiles {
+                        let (tw, th) = if area.width() * 9.0 / 16.0 <= area.height() { (area.width(), area.width() * 9.0 / 16.0) } else { (area.height() * 16.0 / 9.0, area.height()) };
+                        let tile = kurbo::Rect::from_center_size(area.center(), (tw.floor(), th.floor()));
+                        min_ui::paint::rect(scene, tile, t::BACKGROUND_LAYER_1_COLOR);
+                        if let Some(ic) = g.fonts.icon("waveform", (th * 0.28) as f32, min_ui::paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT)) { min_ui::fonts::draw_layout(scene, &ic, kurbo::Affine::translate((tile.center().x - ic.width() as f64 / 2.0, tile.center().y - ic.height() as f64 / 2.0))); }
+                    }
+                }
                 if self.annot.active && self.dual.is_none() { if let (Some(cur), Some(geo)) = (live::note_cur(self.live.as_ref(), self.player.as_ref(), &self.annot.notes, ""), annot_geo(&g.presenter.engine)) { self.annot.paint(scene, &cur, &geo); } }
                 // the safety guide over each picture (row 215): side by side → both sides; wipe / difference / single → A (QCView)
                 if let Some((_, gd)) = g.guide.as_ref() {
@@ -1781,7 +1799,7 @@ impl App {
                 let (pos, playing) = self.player.as_ref().map(|p| (p.current_frame(), p.is_playing())).unwrap_or((0, false));
                 let t = Instant::now();
                 match Transport::open_playlist(tl, self.transport_options()) {
-                    Ok(p) => { let name = self.source_label.clone(); self.adopt(p, name, "", t); if let Some(p) = self.player.as_mut() { let fps = p.rate().as_f64(); if fps > 0.0 { p.seek_to_time(pos.min(p.frame_count() - 1).max(0) as f64 / fps); } if playing { p.play(); } } }
+                    Ok(p) => { let name = self.source_label.clone(); self.adopt(p, name, "", t); if let Some(p) = self.player.as_mut() { let by = clip_routing(&self.project, &p.timeline); p.set_clip_routing(by); let fps = p.rate().as_f64(); if fps > 0.0 { p.seek_to_time(pos.min(p.frame_count() - 1).max(0) as f64 / fps); } if playing { p.play(); } } }
                     Err(e) => println!("playlist rebuild: {e}"),
                 }
             }
@@ -2194,6 +2212,10 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for e in std::fs::read_dir(from)? { let e = e?; let (src, dst) = (e.path(), to.join(e.file_name())); if src.is_dir() { copy_tree(&src, &dst)?; } else if !dst.exists() { std::fs::copy(&src, &dst)?; } }
     Ok(())
+}
+/// Each clip's file → the routing chosen for its item in the bin (a playlist's clips keep their own).
+fn clip_routing(project: &qcv_project::ProjectManager, tl: &qcv_timeline::Timeline) -> std::collections::HashMap<String, qcv_player::RoutingMode> {
+    tl.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| !c.is_gap && !c.media_path.is_empty()).map(|c| (c.media_path.clone(), project.item(&c.media_item_id).map(routing_of).unwrap_or(qcv_player::RoutingMode::Auto))).collect()
 }
 fn routing_of(m: &qcv_project::MediaItem) -> qcv_player::RoutingMode { match m.audio_routing_mode { qcv_project::AudioRoutingMode::Downmix5_1 => qcv_player::RoutingMode::Downmix5_1, qcv_project::AudioRoutingMode::Stereo7_8 => qcv_player::RoutingMode::Stereo7_8, _ => qcv_player::RoutingMode::Auto } }
 fn par_of(m: &qcv_project::MediaItem) -> min_present::engine::Par { match m.pixel_aspect_mode { qcv_project::PixelAspectMode::Square => min_present::engine::Par::Square, qcv_project::PixelAspectMode::Detected => min_present::engine::Par::Detected, qcv_project::PixelAspectMode::Custom => min_present::engine::Par::Custom(m.custom_par_num.max(1) as u32, m.custom_par_den.max(1) as u32) } }

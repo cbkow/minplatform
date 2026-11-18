@@ -184,6 +184,8 @@ impl Slot {
 struct FastSeek { dir: i32, speed: f64, started: Instant, last: Instant, last_tick: Instant, position_sec: f64 }
 
 pub struct Transport {
+    /// a playlist's clips' own audio routing, by the clip's file ([`Transport::set_clip_routing`]); empty = the player's one routing
+    clip_routing: std::collections::HashMap<String, crate::audio::RoutingMode>,
     pub timeline: Timeline, pub timer: PlaybackTimer, pub audio: Box<dyn AudioHooks>, opts: TransportOptions, range_override: crate::RangeOverride,
     slots: Vec<Slot>, active: usize, /// the spare slot's open in flight: (clip index, the receiver)
     prewarm: Option<(usize, mpsc::Receiver<Result<Slot, Error>>)>,
@@ -257,7 +259,7 @@ impl Transport {
         let rate = timeline.rate; let fps = rate.as_f64(); let frames = timeline.duration as i32;
         let mut timer = PlaybackTimer::new();
         timer.set_frame_rate(fps); timer.set_duration(if fps > 0.0 { frames as f64 / fps } else { 0.0 }); timer.set_clock_policy(opts.clock_policy); timer.set_looping(opts.loop_enabled);
-        Transport { timeline, timer, audio: Box::new(NoAudio), loop_enabled: opts.loop_enabled, refresh_ms: opts.refresh_ms, opts, range_override: crate::RangeOverride::Auto,
+        Transport { clip_routing: Default::default(), timeline, timer, audio: Box::new(NoAudio), loop_enabled: opts.loop_enabled, refresh_ms: opts.refresh_ms, opts, range_override: crate::RangeOverride::Auto,
             slots: vec![], active: 0, prewarm: None, pending: None, edit_scrub: false, rate, frames, fps,
             review_speed: 1.0, in_point: -1, out_point: -1, user_wants_playback: false,
             fast: None, modal_active: false, modal_was_playing: false, scrubbing: None, scrub_pos: None, skim: None, seek_gate: None,
@@ -594,9 +596,21 @@ impl Transport {
         if !std::mem::take(&mut self.edit_scrub) { return }
         let f = self.current_frame(); self.scrub_to_frame(f); self.end_scrub();
     }
+    /// A playlist's clips keep the routing chosen for their own file (QCView's per-clip choice; the port played every clip
+    /// of a playlist with the one routing the player had). `by_path`: each clip's file → its routing; a file not named is
+    /// Auto. Takes effect at once for the clip that is playing and at every cut after.
+    pub fn set_clip_routing(&mut self, by_path: std::collections::HashMap<String, crate::audio::RoutingMode>) {
+        self.clip_routing = by_path; let path = self.audio_path.clone(); self.route_for(&path);
+    }
+    fn route_for(&mut self, path: &str) {
+        if self.clip_routing.is_empty() { return }
+        let m = self.clip_routing.get(path).copied().unwrap_or(crate::audio::RoutingMode::Auto);
+        if self.audio.routing_mode() != m { self.audio.set_routing_mode(m); }
+    }
     /// Install an audio player (QCView's `AudioPlayer`): opens the active clip's audio on it.
     pub fn set_audio(&mut self, mut audio: Box<dyn AudioHooks>) {
         let path = self.path().to_string();
+        if !self.clip_routing.is_empty() { audio.set_routing_mode(self.clip_routing.get(&path).copied().unwrap_or(crate::audio::RoutingMode::Auto)); }
         if !path.is_empty() { audio.open(&path); }
         self.audio = audio; self.audio_path = path;
     }
@@ -608,6 +622,7 @@ impl Transport {
         let path = self.slots[self.active].path.clone();
         if path == self.audio_path { return }
         self.audio_path = path.clone();
+        self.route_for(&path);
         self.audio.open(&path);
         self.audio_hold_pending = false;
         if self.audio.has_audio() { self.audio.set_tempo(self.review_speed); let p = self.audio_position(); self.audio.seek(p); if self.timer.is_playing() && self.scrubbing.is_none() && self.fast.is_none() { self.audio.play(); } }
@@ -982,8 +997,10 @@ mod scrub_tests {
     /// clip's file once and played it under every clip. An audio file is a clip like any other (canon row 278).
     #[test]
     fn a_playlists_audio_follows_the_active_clip() {
-        struct Opens(Arc<Mutex<Vec<String>>>);
-        impl AudioHooks for Opens { fn has_audio(&self) -> bool { true } fn open(&mut self, p: &str) -> bool { self.0.lock().unwrap().push(p.to_string()); true } }
+        // the hook notes each file it opens, and under which routing (`routed`)
+        struct Opens(Arc<Mutex<Vec<String>>>, crate::audio::RoutingMode, Arc<Mutex<Vec<crate::audio::RoutingMode>>>);
+        impl AudioHooks for Opens { fn has_audio(&self) -> bool { true } fn open(&mut self, p: &str) -> bool { self.0.lock().unwrap().push(p.to_string()); self.2.lock().unwrap().push(self.1); true }
+            fn set_routing_mode(&mut self, m: crate::audio::RoutingMode) { self.1 = m; } fn routing_mode(&self) -> crate::audio::RoutingMode { self.1 } }
         let dir = std::env::temp_dir();
         let (v, a) = (dir.join(format!("qcv-plv-{}.mov", std::process::id())), dir.join(format!("qcv-pla-{}.wav", std::process::id())));
         let ff = |args: &[&str], out: &std::path::Path| std::process::Command::new("ffmpeg").args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y"]).args(args).arg(out).status().map(|s| s.success()).unwrap_or(false);
@@ -996,7 +1013,10 @@ mod scrub_tests {
         assert_eq!(ed.timeline.duration, 72, "the audio clip is in the timeline");
         let mut t = Transport::open_playlist(ed.timeline.clone(), TransportOptions { scrub: None, ..Default::default() }).unwrap();
         let log = Arc::new(Mutex::new(vec![]));
-        t.set_audio(Box::new(Opens(log.clone())));
+        let routed = Arc::new(Mutex::new(vec![]));
+        // each clip keeps its own file's routing: the audio file is set to 7/8, the video's is left alone
+        t.set_clip_routing([(ap.clone(), crate::audio::RoutingMode::Stereo7_8)].into_iter().collect());
+        t.set_audio(Box::new(Opens(log.clone(), crate::audio::RoutingMode::Auto, routed.clone())));
         assert_eq!(*log.lock().unwrap(), vec![vp.clone()], "the first clip's file at the open");
         t.seek_to_frame(40);   // into the audio clip
         let t0 = Instant::now();
@@ -1004,6 +1024,7 @@ mod scrub_tests {
         assert_eq!(t.active_clip_index(), 1);
         assert!(t.is_audio_only() && t.tick(Instant::now()).is_none() && t.current().is_none(), "an audio clip shows nothing");
         assert_eq!(log.lock().unwrap().last(), Some(&ap), "the audio player opened the audio clip's file");
+        assert_eq!(*routed.lock().unwrap(), vec![crate::audio::RoutingMode::Auto, crate::audio::RoutingMode::Stereo7_8], "each clip was opened under its own routing");
         assert!(!t.seek_in_flight() || { t.tick(Instant::now()); !t.seek_in_flight() }, "no landing is awaited on an audio clip");
         let _ = std::fs::remove_file(v); let _ = std::fs::remove_file(a);
     }
