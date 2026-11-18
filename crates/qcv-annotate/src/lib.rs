@@ -180,7 +180,7 @@ impl Annotations {
             (Tool::PathConvert, Some(s), Some((i, 0)), Some(n)) => { self.sel_anchors = vec![i]; self.drag = Some(Drag { id: s.id, last: p, moved: false, before: n, scale: None, node: Some((i, 3)) }); }
             (Tool::PathAdd, Some(s), None, _) if piece_at(s.path.as_ref().unwrap(), geo, pt, s.width * geo.px_per_src / 2.0 + 6.0).is_some() => {
                 let (k, t) = piece_at(s.path.as_ref().unwrap(), geo, pt, s.width * geo.px_per_src / 2.0 + 6.0).unwrap();
-                self.edit_path(&s.id, cur, |pp| split(pp, k, t)); self.sel_anchors = vec![k + 1];
+                self.edit_path(&s.id, cur, |pp| pp.split(k, t)); self.sel_anchors = vec![k + 1];
             }
             _ => {
                 // nothing of the selected path under the pointer: a pen path's line there becomes the selected one; empty
@@ -289,7 +289,7 @@ impl Annotations {
             let _ = geo; return None
         }
         if let Some(d) = self.drag.take() {
-            if !d.moved { if let Some((i, 3)) = d.node { return self.edit_path(&d.id, cur, |pp| turn(pp, i)) } return None }
+            if !d.moved { if let Some((i, 3)) = d.node { return self.edit_path(&d.id, cur, |pp| pp.turn(i)) } return None }
             let key = d.before.timecode.clone(); let after = self.notes.iter().find(|n| n.timecode == key).cloned();
             self.push_step(Step { key: key.clone(), before: Some(d.before), after }); self.save();
             return Some(Committed { key, new_note: false })
@@ -492,31 +492,12 @@ fn node_at(path: &PenPath, geo: &Geo, pt: Point, handles: bool) -> Option<(usize
     if handles { for (i, a) in path.anchors.iter().enumerate() { for (part, h) in [(1u8, a.hin), (2u8, a.hout)] { if h != a.p && geo.to_px(h).distance(pt) <= 7.0 { return Some((i, part)) } } } }
     path.anchors.iter().position(|a| geo.to_px(a.p).distance(pt) <= 7.0).map(|i| (i, 0))
 }
-/// An anchor turned: a corner becomes smooth (handles a sixth of the way to its neighbours' chord each side), anything
-/// else a corner.
-fn turn(pp: &mut PenPath, i: usize) {
-    let n = pp.anchors.len(); let Some(a) = pp.anchors.get(i).copied() else { return };
-    if a.hin != a.p || a.hout != a.p { pp.anchors[i] = Anchor::corner(a.p); return }
-    let prev = if i > 0 { pp.anchors[i - 1].p } else if pp.closed { pp.anchors[n - 1].p } else { a.p };
-    let next = if i + 1 < n { pp.anchors[i + 1].p } else if pp.closed { pp.anchors[0].p } else { a.p };
-    let v = [(next[0] - prev[0]) / 6.0, (next[1] - prev[1]) / 6.0];
-    pp.anchors[i] = Anchor { p: a.p, hin: [a.p[0] - v[0], a.p[1] - v[1]], hout: [a.p[0] + v[0], a.p[1] + v[1]] };
-}
 /// A pen path's anchors (squares; the picked one filled) and the handles that stand off them, on screen only.
 /// The piece of a pen path under the pointer (within `reach` px): its first anchor's index and where along it (0..1).
 fn piece_at(path: &PenPath, geo: &Geo, pt: Point, reach: f64) -> Option<(usize, f64)> {
     let a = &path.anchors; let n = a.len(); let pieces = if path.closed { n } else { n.saturating_sub(1) };
     (0..pieces).map(|k| { let (x, y) = (a[k], a[(k + 1) % n]); let c = kurbo::CubicBez::new(geo.to_px(x.p), geo.to_px(x.hout), geo.to_px(y.hin), geo.to_px(y.p)); let near = c.nearest(pt, 0.05); (k, near.t, near.distance_sq) })
         .filter(|(_, t, d)| *d <= reach * reach && *t > 0.02 && *t < 0.98).min_by(|x, y| x.2.total_cmp(&y.2)).map(|(k, t, _)| (k, t))
-}
-/// An anchor put on piece `k` at `t` (de Casteljau): the curve is the one it was.
-fn split(pp: &mut PenPath, k: usize, t: f64) {
-    let n = pp.anchors.len(); if n < 2 || k >= n { return } let j = (k + 1) % n;
-    let l = |a: [f64; 2], b: [f64; 2]| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-    let (p0, p1, p2, p3) = (pp.anchors[k].p, pp.anchors[k].hout, pp.anchors[j].hin, pp.anchors[j].p);
-    let (a, q, b) = (l(p0, p1), l(p1, p2), l(p2, p3)); let (hin, hout) = (l(a, q), l(q, b));
-    pp.anchors[k].hout = a; pp.anchors[j].hin = b;
-    pp.anchors.insert(k + 1, Anchor { p: l(hin, hout), hin, hout });
 }
 fn paint_nodes(scene: &mut Scene, anchors: &[Anchor], geo: &Geo, picked: &[usize]) {
     let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff); let white = peniko::Color::from_rgba8(0xff, 0xff, 0xff, 0xff);
@@ -636,12 +617,12 @@ mod scale_tests {
         let mut pp = PenPath { anchors: vec![Anchor { p: [0.1, 0.5], hin: [0.1, 0.5], hout: [0.2, 0.1] }, Anchor { p: [0.6, 0.5], hin: [0.5, 0.9], hout: [0.7, 0.2] }, Anchor::corner([0.9, 0.4])], closed: true };
         let at = |pp: &PenPath, u: f64| { use kurbo::{ParamCurve, ParamCurveArclen}; let b = pp.bez(|p| kurbo::Point::new(p[0], p[1])); let segs: Vec<_> = b.segments().collect(); let total: f64 = segs.iter().map(|s| s.arclen(1e-9)).sum(); let mut want = u * total; for s in &segs { let l = s.arclen(1e-9); if want <= l { return s.eval(s.inv_arclen(want, 1e-9)) } want -= l; } segs.last().unwrap().eval(1.0) };
         let before: Vec<kurbo::Point> = (0..=40).map(|i| at(&pp, i as f64 / 40.0)).collect();
-        super::split(&mut pp, 0, 0.3); super::split(&mut pp, 3, 0.6);   // one on the first piece, one on the closing piece
+        pp.split(0, 0.3); pp.split(3, 0.6);   // one on the first piece, one on the closing piece
         assert_eq!(pp.anchors.len(), 5);
         for (i, b) in before.iter().enumerate() { let a = at(&pp, i as f64 / 40.0); assert!(a.distance(*b) < 1e-6, "the curve moved at {i}: {a:?} vs {b:?}"); }
         // and a smooth point turned is a corner, a corner turned has handles
-        super::turn(&mut pp, 1); assert!(pp.anchors[1].hin == pp.anchors[1].p && pp.anchors[1].hout == pp.anchors[1].p);
-        super::turn(&mut pp, 1); assert!(pp.anchors[1].hin != pp.anchors[1].p && pp.anchors[1].hout != pp.anchors[1].p);
+        pp.turn(1); assert!(pp.anchors[1].hin == pp.anchors[1].p && pp.anchors[1].hout == pp.anchors[1].p);
+        pp.turn(1); assert!(pp.anchors[1].hin != pp.anchors[1].p && pp.anchors[1].hout != pp.anchors[1].p);
     }
 
     use super::*;

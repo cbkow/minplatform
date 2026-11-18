@@ -107,7 +107,11 @@ pub fn page_paint(scene: &mut vello::Scene, id: mn_doc::BlockId, descriptor: &st
 /// The drawing tools (row 324). On a canvas none of them armed means the pointer selects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ink { Pen, /// the pen's path of anchors and handles (row 579): click by click, kept by [`PathLive`] between the presses
-    Path, Line, Arrow, Rect, Oval, Eraser }
+    Path, /// a path tool (row 580): the selected pen path's points picked, added, removed, turned
+    Pt(PathTool), Line, Arrow, Rect, Oval, Eraser }
+/// The four path tools (QCView's, row 572).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathTool { Select, Add, Remove, Convert }
 /// What is armed over a PDF's page or a picture in a note: the pointer that picks strokes, or a drawing tool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick { Select, Draw(Ink) }
@@ -128,7 +132,7 @@ pub fn line_of(tool: Ink, from: Point, to: Point, pen: Option<Vec<[f64; 2]>>, ma
         Ink::Line | Ink::Arrow => { if small { return None } (if tool == Ink::Line { Tool::Line } else { Tool::Arrow }, vec![[from.x, from.y], [to.x, to.y]], None) }
         Ink::Rect => { if small { return None } (Tool::Rectangle, vec![[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]], None) }
         Ink::Oval => { if small { return None } (Tool::Oval, vec![[r.center().x, r.center().y], [r.width() / 2.0, r.height() / 2.0]], None) }
-        Ink::Eraser | Ink::Path => return None,
+        Ink::Eraser | Ink::Path | Ink::Pt(_) => return None,
     };
     Some(Line { s: Stroke { id: strokes::new_id(), tool: kind, color: Stroke::qcolor(color), width, filled: false, is_modeled: kind == Tool::Freehand, points, path: None }, pressures: z })
 }
@@ -172,6 +176,76 @@ impl PathLive {
         if let (false, Some(l)) = (self.down, self.anchors.last()) { let mut b = BezPath::new(); b.move_to(p(l.p)); b.curve_to(p(l.hout), at * self.hover, at * self.hover); scene.stroke(&kurbo::Stroke::new(1.0), kurbo::Affine::IDENTITY, blue, None, &b); }
         for a in &self.anchors { for h in [a.hin, a.hout] { if h != a.p { scene.stroke(&kurbo::Stroke::new(1.0), kurbo::Affine::IDENTITY, blue, None, &kurbo::Line::new(p(a.p), p(h))); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, blue, None, &kurbo::Circle::new(p(h), 3.5)); } } }
         for (i, a) in self.anchors.iter().enumerate() { let r = Rect::from_center_size(p(a.p), (7.0, 7.0)); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, if i + 1 == self.anchors.len() { blue } else { white }, None, &r); scene.stroke(&kurbo::Stroke::new(1.0), kurbo::Affine::IDENTITY, blue, None, &r); }
+    }
+}
+/// What a press of a path tool came to.
+#[derive(Debug, PartialEq)]
+pub enum PathPress { /// nothing of this path was under the pointer
+    Miss, /// a node is held: the moves change the path, the release ends it
+    Held, /// the path was changed at once (a point added or removed): one step
+    Changed, /// taken, nothing changed (an anchor picked or let go with Shift)
+    Taken }
+/// The path tools at work on ONE line that is a pen path, in its surface's units (rows 572 / 580): the picked anchors, the
+/// node held, the box dragged over empty ground. The surface owns the line and what a change means there (a step of its
+/// history); this owns the gestures - they are `qcv-annotate`'s, for the two surfaces that draw by minNotes' own ink.
+#[derive(Default)]
+pub struct PathEdit { pub picked: Vec<usize>, held: Option<(usize, u8, Point, bool)>, pub marquee: Option<(Point, Point)> }
+impl PathEdit {
+    pub fn clear(&mut self) { self.picked.clear(); self.held = None; self.marquee = None; }
+    pub fn holding(&self) -> bool { self.held.is_some() }
+    /// The node held and the box are let go, nothing done.
+    pub fn drop_hold(&mut self) { self.held = None; self.marquee = None; }
+    pub fn press(&mut self, tool: PathTool, l: &mut Line, p: Point, reach: f64, shift: bool) -> PathPress {
+        let Some(pp) = l.s.path.as_mut() else { return PathPress::Miss };
+        let node = pp.node_at([p.x, p.y], reach, tool == PathTool::Select);
+        match (tool, node) {
+            (PathTool::Select, Some((i, part))) => {
+                if part == 0 { if shift { if let Some(k) = self.picked.iter().position(|x| *x == i) { self.picked.remove(k); return PathPress::Taken } self.picked.push(i); } else if !self.picked.contains(&i) { self.picked = vec![i]; } }
+                self.held = Some((i, part, p, false)); PathPress::Held
+            }
+            (PathTool::Remove, Some((i, 0))) => { if pp.anchors.len() <= 2 { return PathPress::Taken } pp.anchors.remove(i); self.picked.clear(); l.s.points = pp.flatten_in(1.0); PathPress::Changed }
+            (PathTool::Convert, Some((i, 0))) => { self.picked = vec![i]; self.held = Some((i, 3, p, false)); PathPress::Held }
+            (PathTool::Add, None) => match pp.piece_at([p.x, p.y], reach + l.s.width / 2.0) { Some((k, t)) => { pp.split(k, t); self.picked = vec![k + 1]; l.s.points = pp.flatten_in(1.0); PathPress::Changed } None => PathPress::Miss },
+            _ => PathPress::Miss,
+        }
+    }
+    /// The pointer moved with a node held. True: the path changed.
+    pub fn moved(&mut self, l: &mut Line, p: Point, alt: bool, slack: f64) -> bool {
+        if let Some(m) = self.marquee.as_mut() { m.1 = p; return false }
+        let Some((i, part, last, moved)) = self.held.as_mut() else { return false }; let Some(pp) = l.s.path.as_mut() else { return false };
+        if !*moved && (p - *last).hypot() <= slack { return false }
+        let d = p - *last; *last = p; *moved = true; let (i, part) = (*i, *part); let picked = self.picked.clone();
+        match part {
+            0 => for (k, a) in pp.anchors.iter_mut().enumerate() { if k == i || picked.contains(&k) { for q in [&mut a.p, &mut a.hin, &mut a.hout] { q[0] += d.x; q[1] += d.y; } } },
+            3 => if let Some(a) = pp.anchors.get_mut(i) { a.hout = [p.x, p.y]; a.hin = [2.0 * a.p[0] - p.x, 2.0 * a.p[1] - p.y]; },
+            _ => if let Some(a) = pp.anchors.get_mut(i) { let (mine, other) = if part == 1 { (&mut a.hin, &mut a.hout) } else { (&mut a.hout, &mut a.hin) }; *mine = [p.x, p.y];
+                let (vx, vy) = (p.x - a.p[0], p.y - a.p[1]); let (len, ol) = (vx.hypot(vy), (other[0] - a.p[0]).hypot(other[1] - a.p[1])); if !alt && len > 1e-9 && ol > 1e-9 { *other = [a.p[0] - vx / len * ol, a.p[1] - vy / len * ol]; } },
+        }
+        l.s.points = pp.flatten_in(1.0); true
+    }
+    /// The release. True: the path is other than at the press (one step). A box that was dragged picks the anchors inside it.
+    pub fn release(&mut self, l: &mut Line, p: Point, shift: bool) -> bool {
+        if let Some((a, _)) = self.marquee.take() { let r = Rect::from_points(a, p); if let Some(pp) = &l.s.path { let inside: Vec<usize> = pp.anchors.iter().enumerate().filter(|(_, n)| r.contains(Point::new(n.p[0], n.p[1]))).map(|(i, _)| i).collect(); if !shift { self.picked.clear(); } for i in inside { if !self.picked.contains(&i) { self.picked.push(i); } } } return false }
+        let Some((i, part, _, moved)) = self.held.take() else { return false };
+        if moved { return true }
+        if part == 3 { if let Some(pp) = l.s.path.as_mut() { pp.turn(i); l.s.points = pp.flatten_in(1.0); return true } }
+        false
+    }
+    /// Delete: the picked anchors go while two are left (true: the path changed); false: the path itself is to go.
+    pub fn delete(&mut self, l: &mut Line) -> Option<bool> {
+        if self.picked.is_empty() { return None } let pp = l.s.path.as_mut()?;
+        let mut gone = std::mem::take(&mut self.picked); gone.retain(|i| *i < pp.anchors.len()); gone.sort_unstable(); gone.dedup();
+        if pp.anchors.len() - gone.len() < 2 { return Some(false) }
+        for i in gone.iter().rev() { pp.anchors.remove(*i); } l.s.points = pp.flatten_in(1.0); Some(true)
+    }
+    /// The path's anchors (the picked ones filled) and handles, and the box being dragged. `at`: the surface's units to the window's.
+    pub fn paint(&self, scene: &mut vello::Scene, l: &Line, at: kurbo::Affine) {
+        let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff); let white = peniko::Color::from_rgba8(0xff, 0xff, 0xff, 0xff); let p = |q: [f64; 2]| at * Point::new(q[0], q[1]);
+        if let Some(pp) = &l.s.path {
+            for a in &pp.anchors { for h in [a.hin, a.hout] { if h != a.p { scene.stroke(&kurbo::Stroke::new(1.0), kurbo::Affine::IDENTITY, blue, None, &kurbo::Line::new(p(a.p), p(h))); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, blue, None, &kurbo::Circle::new(p(h), 3.5)); } } }
+            for (i, a) in pp.anchors.iter().enumerate() { let r = Rect::from_center_size(p(a.p), (7.0, 7.0)); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, if self.picked.contains(&i) { blue } else { white }, None, &r); scene.stroke(&kurbo::Stroke::new(1.0), kurbo::Affine::IDENTITY, blue, None, &r); }
+        }
+        if let Some((a, b)) = self.marquee { let r = Rect::from_points(at * a, at * b); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0x30), None, &r); scene.stroke(&kurbo::Stroke::new(1.0), kurbo::Affine::IDENTITY, blue, None, &r); }
     }
 }
 enum Doing { Draw { tool: Ink, from: Point, to: Point, sm: Option<qcv_notes::ink::Smoother>, marks: Vec<(usize, f64)>, pressed: bool }, Rub { last: Point }, Move { id: String, last: Point }, Idle }

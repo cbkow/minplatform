@@ -59,7 +59,8 @@ pub struct Canvas {
     /// the armed drawing tool; the pen's colour and width (the sheet's units); the pen's pressure at the pointer event being
     /// handled (None: a mouse, or a pen that tells none)
     pub tool: Option<Ink>, pub pen: [f32; 4], pub pen_w: f64, pub pressure: Option<f64>, /// the pen's path under way (row 579), in the sheet's units; the card it is drawn on, when one was entered; Alt held (a handle alone)
-    pub path: Option<ink::PathLive>, path_card: Option<BlockId>, pub alt: bool,
+    pub path: Option<ink::PathLive>, path_card: Option<BlockId>, pub alt: bool, /// the path tools (row 580): the pen path they work on (an ink element of the sheet), the points picked, whether this hold has made its step
+    pub psel: Option<BlockId>, pub pedit: ink::PathEdit, pstep: bool,
     /// a picture's or a PDF's card that was entered (pressed twice): what is drawn inside it goes ON it - into its own record, as in a note (row 325)
     pub inked: Option<BlockId>,
     /// the frame tool is armed (row 327); Ctrl is held (a drag does not snap); Shift, as the pointer's last event had it;
@@ -77,7 +78,7 @@ fn small(icon: &'static str, tip: &str) -> ActionButton { let mut b = ActionButt
 impl Canvas {
     pub fn new(id: BlockId, c: mn_store::Canvas) -> Canvas {
         let mut pc = ActionButton::new("", "Zoom to 100 %").size_s(); pc.label = Some("100 %".into());
-        Canvas { path: None, path_card: None, alt: false, id, els: c.elements, sel: vec![], quiet: None, cam: c.camera.unwrap_or((0.0, 0.0, 1.0)), fit: c.camera.is_none(), dirty: false, rect: Rect::ZERO, scale: 1.0, act: None, undo: vec![], redo: vec![], edit: None, back: None,
+        Canvas { path: None, path_card: None, alt: false, psel: None, pedit: Default::default(), pstep: false, id, els: c.elements, sel: vec![], quiet: None, cam: c.camera.unwrap_or((0.0, 0.0, 1.0)), fit: c.camera.is_none(), dirty: false, rect: Rect::ZERO, scale: 1.0, act: None, undo: vec![], redo: vec![], edit: None, back: None,
             space: false, hand: false, reading: false, last_click: None, fit_h: Default::default(), entered: None, want_note: None, opened: None, zoom_out: small("minus", "Zoom out"), zoom_pc: pc, zoom_in: small("plus", "Zoom in"), zoom_fit: small("arrows-in-simple", "Fit everything"), b_hand: small("hand", "Pan (hold Space)"), tool: None, pen: [1.0, 0.0, 0.0, 1.0], pen_w: 6.0, pressure: None, inked: None, framing: false, ctrl: false, shift: false, guides: vec![], drop_at: None, hover: None, t0: Instant::now(), drawn: Default::default() }
     }
     /// As the collection keeps it.
@@ -192,7 +193,10 @@ impl Canvas {
     pub fn pick_at(&mut self, x: f64, y: f64) { self.edit_end(true); match self.at(x, y) { Some(id) => if !self.sel.contains(&id) { self.sel = vec![id]; }, None => self.sel.clear() } }
     pub fn select_all(&mut self) { self.sel = self.els.iter().filter(|e| !e.locked).map(|e| e.id).collect(); }
     /// The selected cards go (a frame with what is in it); a locked one stays.
-    pub fn delete(&mut self) { let gone: Vec<BlockId> = self.units().into_iter().flat_map(|u| u.0).collect(); if gone.is_empty() { return } self.step(); self.sel.retain(|s| !gone.contains(s)); self.els.retain(|e| !gone.contains(&e.id)); self.hug(); }
+    pub fn delete(&mut self) {
+        // a path tool with points picked: they go while two are left; else the whole path (the stroke) goes
+        if matches!(self.tool, Some(Ink::Pt(_))) { if let Some((i, mut l)) = self.path_el() { match self.pedit.delete(&mut l) { Some(true) => { self.step(); self.path_write(i, &l); } _ => { self.step(); self.els.remove(i); self.psel = None; self.pedit.clear(); } } return } }
+        let gone: Vec<BlockId> = self.units().into_iter().flat_map(|u| u.0).collect(); if gone.is_empty() { return } self.step(); self.sel.retain(|s| !gone.contains(s)); self.els.retain(|e| !gone.contains(&e.id)); self.hug(); }
     pub fn nudge(&mut self, dx: f64, dy: f64) { let ids: Vec<BlockId> = self.units().into_iter().flat_map(|u| u.0).collect(); if ids.is_empty() { return } self.step(); self.shift_els(&ids, dx, dy); self.hug(); }
     /// The selected elements, for the clipboard (a frame with what is in it).
     pub fn copy(&self) -> Vec<Element> { self.els.iter().filter(|e| self.sel.contains(&e.id) || self.frame_of(e).is_some_and(|f| self.sel.contains(&f))).cloned().collect() }
@@ -220,7 +224,32 @@ impl Canvas {
         let Some(pl) = self.path.take() else { return }; let card = self.path_card.take();
         if let Some(l) = pl.line(closed, self.pen, self.pen_w) { match card { Some(id) => { let mut ls = self.card_lines(id); ls.push(l); self.step(); self.card_set(id, &ls); } None => self.ink_put(l) } }
     }
-    pub fn arm(&mut self, tool: Option<Ink>) { self.path_end(false); self.edit_end(true); self.act = None; self.framing = false; self.tool = if self.tool == tool { None } else { tool }; if self.tool.is_some() { self.sel.clear(); } }
+    /// The pen path the path tools work on: its element's place in the list, and its line in the sheet's units.
+    pub fn path_el(&self) -> Option<(usize, ink::Line)> { let id = self.psel?; let i = self.els.iter().position(|e| e.id == id)?; let l = ink::read(&self.els[i]).filter(|l| l.s.path.is_some())?; Some((i, l)) }
+    fn path_write(&mut self, i: usize, l: &ink::Line) { let (b, record) = ink::write(l); let e = &mut self.els[i]; e.x = b.x0; e.y = b.y0; e.w = b.width(); e.h = b.height(); e.record = record; }
+    /// The path tools have something to work on: the pen's path or one of them is armed, or the one selected stroke is a pen path.
+    pub fn path_ready(&self) -> bool { matches!(self.tool, Some(Ink::Path | Ink::Pt(_))) || self.path_el().is_some() || (self.sel.len() == 1 && self.get(self.sel[0]).and_then(ink::read).is_some_and(|l| l.s.path.is_some())) }
+    /// A press with a path tool (QCView's rules, row 572): on the selected pen path - its points; on another pen path's line -
+    /// that one is selected; on empty ground - the point tool drags a box, the others let the picked points go.
+    fn path_press(&mut self, t: ink::PathTool, w: Point) -> bool {
+        let reach = 7.0 * self.scale / self.k().max(1e-9);
+        if let Some((i, mut l)) = self.path_el() {
+            match self.pedit.press(t, &mut l, w, reach, self.shift) {
+                ink::PathPress::Changed => { self.step(); self.path_write(i, &l); return true }
+                ink::PathPress::Held => { self.pstep = false; return true }
+                ink::PathPress::Taken => return true,
+                ink::PathPress::Miss => {}
+            }
+        }
+        let slack = 4.0 * self.scale / self.k().max(1e-9);
+        if let Some(id) = self.els.iter().rev().filter(|e| e.kind == "ink" && !e.locked).find(|e| ink::read(e).is_some_and(|l| l.s.path.is_some() && ink::hit(&l, w, slack))).map(|e| e.id) { if self.psel != Some(id) { self.psel = Some(id); } self.pedit.clear(); return true }
+        if t == ink::PathTool::Select { self.pedit.marquee = Some((w, w)); } else { self.pedit.picked.clear(); }
+        true
+    }
+    pub fn arm(&mut self, tool: Option<Ink>) { self.path_end(false); self.edit_end(true); self.act = None;
+        // a path tool keeps (or takes) the pen path that is selected; any other tool lets it go
+        if matches!(tool, Some(Ink::Pt(_))) && self.tool != tool { if self.psel.is_none() && self.sel.len() == 1 && self.get(self.sel[0]).and_then(ink::read).is_some_and(|l| l.s.path.is_some()) { self.psel = Some(self.sel[0]); } } else if !matches!(tool, Some(Ink::Pt(_))) { self.psel = None; }
+        self.pedit.clear(); self.framing = false; self.tool = if self.tool == tool { None } else { tool }; if self.tool.is_some() { self.sel.clear(); } }
     /// The eraser's reach on the sheet: half the pen's width, and never less than five points on the screen.
     fn rub_r(&self) -> f64 { (self.pen_w / 2.0).max(5.0 / self.cam.2) }
     /// The stroke a gesture makes, in the sheet's units (`pen`: the pen's line so far). None: too small to be one.
@@ -434,6 +463,7 @@ impl Canvas {
                 let card = self.inked.filter(|id| self.get(*id).is_some_and(|e| self.on_screen(e).contains(Point::new(x, y)))); if card.is_none() { self.inked = None; }
                 if let Some(tool) = self.tool { self.fit = false; self.sel.clear();
                     // the pen's path: each press is an anchor (on the first one: the close, at the release)
+                    if let Ink::Pt(t) = tool { return self.path_press(t, w) }
                     if tool == Ink::Path { let near = 9.0 * self.scale / self.k().max(1e-9); match self.path.as_mut() { Some(pl) => pl.press(w, near), None => { self.path = Some(ink::PathLive::begin(w)); self.path_card = card; } } return true }
                     if tool == Ink::Eraser { let mut stepped = false; self.rub(w, w, &mut stepped, card); self.act = Some(Act::Rub { last: w, stepped, card }); }
                     else { let p = self.pressure; self.act = Some(Act::Draw { card, tool, from: w, to: w, sm: (tool == Ink::Pen).then(|| Smoother::begin([w.x / 1000.0, w.y / 1000.0], self.secs())), marks: vec![(1, p.unwrap_or(1.0))], pressed: p.is_some() }); }
@@ -455,6 +485,10 @@ impl Canvas {
                 true }
             Event::Move { x, y } => { let w = self.to_world(x, y); let k = self.k();
                 if let Some(pl) = self.path.as_mut() { pl.moved(w, self.alt, 3.0 * self.scale / k.max(1e-9)); return true }
+                // a path tool's hold: the node follows (its first change is the step); its box grows
+                if self.pedit.holding() || self.pedit.marquee.is_some() {
+                    match self.path_el() { Some((i, mut l)) => { if self.pedit.moved(&mut l, w, self.alt, 3.0 * self.scale / k.max(1e-9)) { if !self.pstep { self.step(); self.pstep = true; } self.path_write(i, &l); } } None => { if let Some(m) = self.pedit.marquee.as_mut() { m.1 = w; } } }
+                    return true }
                 match self.act.take() {
                     Some(Act::Draw { tool, from, mut sm, mut marks, pressed, card, .. }) => { let p = self.pressure; let t = self.secs();
                         if let Some(s) = sm.as_mut() { s.push([w.x / 1000.0, w.y / 1000.0], t); marks.push((s.points().len(), p.unwrap_or(1.0))); }
@@ -487,6 +521,12 @@ impl Canvas {
                     // the eraser's ring follows the pointer
                     None => self.tool == Some(Ink::Eraser),
                 } }
+            Event::Up { x, y, .. } if self.pedit.holding() || self.pedit.marquee.is_some() => { let w = self.to_world(x, y);
+                // a box with no path selected: the topmost pen path with an anchor inside it becomes the selected one
+                if let (None, Some((a, _))) = (self.path_el(), self.pedit.marquee) { let r = Rect::from_points(a, w);
+                    self.psel = self.els.iter().rev().filter(|e| e.kind == "ink" && !e.locked).find(|e| ink::read(e).and_then(|l| l.s.path).is_some_and(|pp| pp.anchors.iter().any(|n| r.contains(Point::new(n.p[0], n.p[1]))))).map(|e| e.id); }
+                match self.path_el() { Some((i, mut l)) => { if self.pedit.release(&mut l, w, self.shift) { if !self.pstep { self.step(); } self.path_write(i, &l); } } None => self.pedit.drop_hold() }
+                self.pstep = false; true }
             Event::Up { .. } if self.path.as_ref().is_some_and(|p| p.down) => { if self.path.as_mut().is_some_and(|p| p.release()) { self.path_end(true); } true }
             Event::Up { .. } => {
                 // reading: a press that did not move is a CLICK on a card - it becomes the chosen one, so that a video's bar and notes and a PDF's pages are in reach (nothing can be moved: every press pans)
@@ -511,7 +551,7 @@ impl Canvas {
     /// A card is looked at larger: the camera goes to it (Escape goes back to where it was).
     pub fn open(&mut self, id: BlockId) { let Some(r) = self.bounds(Some(&[id])) else { return }; if self.back.is_none() { self.back = Some(self.cam); } let fit = self.fit; self.show(r.inflate(24.0, 24.0)); self.cam.2 = self.cam.2.max(ZOOM.0); self.fit = false; let _ = fit; self.sel = vec![id]; }
     /// Escape: a stroke being drawn is given up; else the armed tool is put down; else the words being typed are kept and the field closes; else the camera goes back; else nothing stays selected.
-    pub fn escape(&mut self) { if self.path.is_some() { self.path_end(false); return } if matches!(self.act, Some(Act::Draw { .. } | Act::Rub { .. } | Act::Frame { .. })) { self.act = None; return } if self.framing { self.framing = false; return } if self.edit.is_none() && self.tool.is_some() { self.tool = None; return } if self.inked.take().is_some() { return } if self.edit.is_some() { self.edit_end(true); } else if let Some(c) = self.back.take() { self.cam = c; } else { self.sel.clear(); } self.act = None; }
+    pub fn escape(&mut self) { if self.path.is_some() { self.path_end(false); return } if self.pedit.holding() || self.pedit.marquee.is_some() { self.pedit.drop_hold(); return } if matches!(self.act, Some(Act::Draw { .. } | Act::Rub { .. } | Act::Frame { .. })) { self.act = None; return } if self.framing { self.framing = false; return } if self.edit.is_none() && self.tool.is_some() { self.tool = None; return } if self.inked.take().is_some() { return } if self.edit.is_some() { self.edit_end(true); } else if let Some(c) = self.back.take() { self.cam = c; } else { self.sel.clear(); } self.act = None; }
     /// Return: the one selected card is opened (a text card: typed in).
     pub fn enter(&mut self, fonts: &mut Fonts) { if let [id] = self.sel[..] { match self.get(id).map(|e| e.kind.clone()).as_deref() { Some("text") | Some("frame") => self.edit_begin(id, fonts), Some("ink") => {} Some("note") => self.entered = Some(id), Some("link") => self.opened = Some(id), Some(_) if self.get(id).and_then(kind_of).as_deref() == Some("file") => self.opened = Some(id), Some(_) => self.open(id), None => {} } } }
     /// A key for the text card being typed in. True: it was the card's.
@@ -608,6 +648,9 @@ impl Canvas {
         // the stroke being drawn, as it will be kept; the eraser's ring
         if let Some(Act::Draw { tool, from, to, sm, marks, pressed, .. }) = &self.act { let pen = sm.as_ref().map(|s| s.points().iter().map(|p| [p[0] * 1000.0, p[1] * 1000.0]).collect());
             if let Some(l) = self.line_of(*tool, *from, *to, pen, marks, *pressed) { let o = self.to_screen(Point::ORIGIN); ink::drawn(&l, Point::ORIGIN).paint(scene, Affine::translate((o.x, o.y)) * Affine::scale(k)); } }
+        // a path tool at work: the selected pen path's anchors and handles, the box being dragged
+        if matches!(self.tool, Some(Ink::Pt(_))) { let o = self.to_screen(Point::ORIGIN); let at = Affine::translate((o.x, o.y)) * Affine::scale(k);
+            match self.path_el() { Some((_, l)) => self.pedit.paint(scene, &l, at), None => if let Some((a, b)) = self.pedit.marquee { let r = Rect::from_points(at * a, at * b); scene.fill(Fill::NonZero, Affine::IDENTITY, accent.with_alpha(0.12), None, &r); scene.stroke(&Stroke::new(s.max(1.0)), Affine::IDENTITY, accent, None, &r); } } }
         // the pen's path under way: the line it is so far, its anchors and handles, the piece the next click would add
         if let Some(pl) = &self.path { let o = self.to_screen(Point::ORIGIN); let at = Affine::translate((o.x, o.y)) * Affine::scale(k);
             if let Some(l) = pl.line(false, self.pen, self.pen_w) { ink::drawn(&l, Point::ORIGIN).paint(scene, at); } pl.paint(scene, at); }

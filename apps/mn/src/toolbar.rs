@@ -61,7 +61,8 @@ impl Tool {
 /// What the band shows while a canvas is open (row 324): the armed drawing tool (`DrawSelect`: none - the pointer selects) and the pen's colour.
 #[derive(Clone, Copy, PartialEq)]
 pub struct InkShown { pub tool: Option<Tool>, pub pen: peniko::Color, /// not a canvas: a picture or a PDF block of a note is the current one (row 325)
-    pub page: bool }
+    pub page: bool, /// the path tools have something to work on (the pen's path or one of them is armed, or a pen path is selected)
+    pub path: bool }
 pub struct Shown<'a> { pub state: &'a mn_edit::State, /// a canvas is open (pictures and files can be put on it)
     pub canvas: bool, pub has_note: bool, /// the caret is in a table's cell
     pub in_cell: bool, pub video: Option<VideoShown>, /// a canvas is open and no card of it is entered: its drawing set shows
@@ -88,17 +89,17 @@ impl Toolbar {
         // its width; and, apart at the right end, what is done WITH the note - addressed, delete
         let video: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawPath, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase, NoteText], vec![PtSelect, PtAdd, PtRemove, PtConvert], vec![PenColor, PenThinner, PenThicker], vec![NoteDone, NoteDelete]];
         // a canvas's set (row 324): the pointer and the drawing tools with the Qt app's keys, how a line looks, what is put on the sheet
-        let canvas: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawPath, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase], vec![PenColor, PenThinner, PenThicker], vec![Frame, Image, File]];
+        let canvas: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawPath, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase], vec![PtSelect, PtAdd, PtRemove, PtConvert], vec![PenColor, PenThinner, PenThicker], vec![Frame, Image, File]];
         let mut cgroups = make(&canvas);
         for (b, tip) in cgroups[0].buttons.iter_mut().zip(["Select and move (V, or Esc)", "Pen (P) \u{2014} a tablet's pressure varies the line", "Pen path \u{2014} click for corners, drag for curves (Enter ends it, its first point closes it)", "Line (L)", "Arrow (A)", "Rectangle (R)", "Oval (O)", "Eraser (E) \u{2014} rubs out what it passes over"]) { b.tooltip = tip.to_string(); }
-        for (b, tip) in cgroups[1].buttons.iter_mut().zip(["Pen colour \u{2014} or the selected ink's", "Thinner line", "Thicker line"]) { b.tooltip = tip.to_string(); }
-        for (b, tip) in cgroups[2].buttons.iter_mut().zip(["Frame (F) \u{2014} click for one that hugs what is put in it, drag for one with a size of its own", "Add pictures, videos or PDFs", "Add files"]) { b.tooltip = tip.to_string(); }
+        for (b, tip) in cgroups[2].buttons.iter_mut().zip(["Pen colour \u{2014} or the selected ink's", "Thinner line", "Thicker line"]) { b.tooltip = tip.to_string(); }
+        for (b, tip) in cgroups[3].buttons.iter_mut().zip(["Frame (F) \u{2014} click for one that hugs what is put in it, drag for one with a size of its own", "Add pictures, videos or PDFs", "Add files"]) { b.tooltip = tip.to_string(); }
         // a picture's or a PDF page's set (row 325): the same tools, and a pointer that picks what was drawn
-        let page: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawPath, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase], vec![PenColor, PenThinner, PenThicker]];
+        let page: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawPath, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase], vec![PtSelect, PtAdd, PtRemove, PtConvert], vec![PenColor, PenThinner, PenThicker]];
         let mut pgroups = make(&page);
         for (b, tip) in pgroups[0].buttons.iter_mut().zip(["Pick a stroke (V) \u{2014} drag to move it, Delete to remove it; again to stop", "Pen (P) \u{2014} draws on the picture or the page; again to stop", "Pen path \u{2014} click for corners, drag for curves (Enter ends it, its first point closes it)", "Line (L)", "Arrow (A)", "Rectangle (R)", "Oval (O)", "Eraser (E) \u{2014} rubs out what it passes over"]) { b.tooltip = tip.to_string(); }
-        for (b, tip) in pgroups[1].buttons.iter_mut().zip(["Pen colour \u{2014} or the picked stroke's", "Thinner line", "Thicker line"]) { b.tooltip = tip.to_string(); }
-        Toolbar { sets: [Default::default(), (make(&video), video.clone(), 3), (cgroups, canvas.clone(), 3), (pgroups, page.clone(), 2)], cur: 0, video: None, ink: None, groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, reading: false, scale: 1.0, chips: [None, None] }
+        for (b, tip) in pgroups[2].buttons.iter_mut().zip(["Pen colour \u{2014} or the picked stroke's", "Thinner line", "Thicker line"]) { b.tooltip = tip.to_string(); }
+        Toolbar { sets: [Default::default(), (make(&video), video.clone(), 3), (cgroups, canvas.clone(), 4), (pgroups, page.clone(), 3)], cur: 0, video: None, ink: None, groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, reading: false, scale: 1.0, chips: [None, None] }
     }
     /// Places the band from `x0` to `x1` at `y`; returns its height (0 when hidden). The groups flow left to right and
     /// wrap; when they all fit on one row the last groups move to the right end.
@@ -128,7 +129,7 @@ impl Toolbar {
         let which = if s.video.is_some() { 1 } else if let Some(i) = s.ink { if i.page { 3 } else { 2 } } else { 0 }; let swapped = which != self.cur;
         if swapped { let put = (std::mem::take(&mut self.groups), std::mem::take(&mut self.tools), self.right_from); let (g, tl, r) = std::mem::take(&mut self.sets[which]); self.sets[self.cur] = put; self.groups = g; self.tools = tl; self.right_from = r; self.cur = which; }
         self.video = s.video; self.ink = s.ink;
-        if let (Some(v), 2 | 3) = (s.ink, which) { for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (b, tool) in g.buttons.iter_mut().zip(set) { b.enabled = true; b.selected = Some(*tool) == v.tool; } } return swapped }
+        if let (Some(v), 2 | 3) = (s.ink, which) { for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (b, tool) in g.buttons.iter_mut().zip(set) { b.enabled = !matches!(tool, Tool::PtSelect | Tool::PtAdd | Tool::PtRemove | Tool::PtConvert) || v.path; b.selected = Some(*tool) == v.tool; } } return swapped }
         if let Some(v) = s.video { for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (b, tool) in g.buttons.iter_mut().zip(set) {
             b.enabled = match tool { Tool::NoteDone | Tool::NoteDelete => v.on_note, Tool::PtSelect | Tool::PtAdd | Tool::PtRemove | Tool::PtConvert => v.path, _ => true };
             b.selected = Some(*tool) == v.tool || (*tool == Tool::NoteDone && v.on_note && v.addressed); } }

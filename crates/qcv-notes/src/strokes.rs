@@ -47,6 +47,38 @@ impl PenPath {
         if out.len() == 1 { out.push(out[0]); }
         out
     }
+    /// An anchor put on piece `k` at `t` (de Casteljau): the curve is the one it was.
+    pub fn split(&mut self, k: usize, t: f64) {
+        let n = self.anchors.len(); if n < 2 || k >= n { return } let j = (k + 1) % n;
+        let l = |a: [f64; 2], b: [f64; 2]| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        let (p0, p1, p2, p3) = (self.anchors[k].p, self.anchors[k].hout, self.anchors[j].hin, self.anchors[j].p);
+        let (a, q, b) = (l(p0, p1), l(p1, p2), l(p2, p3)); let (hin, hout) = (l(a, q), l(q, b));
+        self.anchors[k].hout = a; self.anchors[j].hin = b;
+        self.anchors.insert(k + 1, Anchor { p: l(hin, hout), hin, hout });
+    }
+    /// An anchor turned: a corner becomes smooth (handles a sixth of its neighbours' chord each side), anything else a corner.
+    pub fn turn(&mut self, i: usize) {
+        let n = self.anchors.len(); let Some(a) = self.anchors.get(i).copied() else { return };
+        if a.hin != a.p || a.hout != a.p { self.anchors[i] = Anchor::corner(a.p); return }
+        let prev = if i > 0 { self.anchors[i - 1].p } else if self.closed { self.anchors[n - 1].p } else { a.p };
+        let next = if i + 1 < n { self.anchors[i + 1].p } else if self.closed { self.anchors[0].p } else { a.p };
+        let v = [(next[0] - prev[0]) / 6.0, (next[1] - prev[1]) / 6.0];
+        self.anchors[i] = Anchor { p: a.p, hin: [a.p[0] - v[0], a.p[1] - v[1]], hout: [a.p[0] + v[0], a.p[1] + v[1]] };
+    }
+    /// The node at `p` within `reach`, in the path's own units (a surface whose two axes measure alike): a handle that
+    /// stands off its anchor first (when `handles`), then an anchor - (anchor, 0 the anchor · 1 arriving · 2 leaving).
+    pub fn node_at(&self, p: [f64; 2], reach: f64, handles: bool) -> Option<(usize, u8)> {
+        let near = |q: [f64; 2]| (q[0] - p[0]).hypot(q[1] - p[1]) <= reach;
+        if handles { for (i, a) in self.anchors.iter().enumerate() { for (part, h) in [(1u8, a.hin), (2u8, a.hout)] { if h != a.p && near(h) { return Some((i, part)) } } } }
+        self.anchors.iter().position(|a| near(a.p)).map(|i| (i, 0))
+    }
+    /// The piece at `p` within `reach` (the same units): its first anchor and where along it.
+    pub fn piece_at(&self, p: [f64; 2], reach: f64) -> Option<(usize, f64)> {
+        use kurbo::ParamCurveNearest;
+        let a = &self.anchors; let n = a.len(); let pieces = if self.closed { n } else { n.saturating_sub(1) }; let pt = |q: [f64; 2]| kurbo::Point::new(q[0], q[1]);
+        (0..pieces).map(|k| { let (x, y) = (a[k], a[(k + 1) % n]); let near = kurbo::CubicBez::new(pt(x.p), pt(x.hout), pt(y.hin), pt(y.p)).nearest(pt(p), reach / 100.0); (k, near.t, near.distance_sq) })
+            .filter(|(_, t, d)| *d <= reach * reach && *t > 0.02 && *t < 0.98).min_by(|x, y| x.2.total_cmp(&y.2)).map(|(k, t, _)| (k, t))
+    }
     /// Every point and handle through `f` (a move, a scale).
     pub fn map(&mut self, f: impl Fn([f64; 2]) -> [f64; 2]) { for a in &mut self.anchors { a.p = f(a.p); a.hin = f(a.hin); a.hout = f(a.hout); } }
     fn to_json(&self) -> Value { json!({ "closed": self.closed, "anchors": self.anchors.iter().map(|a| Value::Array([a.p[0], a.p[1], a.hin[0], a.hin[1], a.hout[0], a.hout[1]].iter().map(|v| num(*v)).collect())).collect::<Vec<_>>() }) }
