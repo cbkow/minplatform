@@ -818,7 +818,7 @@ impl Ui {
                 if st.root().is_some() || !matches!(self.share_states[i], crate::shares::State::SignIn | crate::shares::State::Unreachable(_)) { self.share_states[i] = st; } } }
                 for i in again { eprintln!("UFB: share {:?} was there and is gone: asked for once more", self.shares[i].name); self.connect_share(i, false); } },
             ShareNews::Connected(id, st, asked, mounted) => { self.share_busy.remove(&id); if let Some(i) = self.shares.iter().position(|s| s.id == id) {
-                eprintln!("UFB: share {:?}: {} ({})", self.shares[i].name, st.words(), if mounted { "connected by this request" } else if st.root().is_some() { "it was there already" } else { "not connected" });
+                eprintln!("UFB: share {:?}: {}{} ({})", self.shares[i].name, st.words(), if let crate::shares::State::Unreachable(why) = &st { format!(": {why}") } else { String::new() }, if mounted { "connected by this request" } else if st.root().is_some() { "it was there already" } else { "not connected" });
                 // connected by this request: it is ours to disconnect (one that was there already is not)
                 if st.root().is_some() { self.share_seen.insert(id.clone()); }
                 if mounted { self.shares[i].ours = true; if cfg!(windows) { if let Some(l) = st.root().and_then(|r| crate::shares::letter_of(&r.to_string_lossy().chars().take(2).collect::<String>())) { self.shares[i].letter = l; } } crate::shares::save(&self.shares); }
