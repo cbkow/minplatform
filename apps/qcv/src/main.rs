@@ -696,15 +696,12 @@ impl App {
         let w = (if dw > 0 && dh > 0 { ((vh as f64) * dw as f64 / dh as f64).round().max(1.0) as u32 } else { vw.max(1) }).min(lim);
         let h = vh.max(1).min(lim);
         let dev = g.presenter.engine.device.clone(); let q = g.presenter.engine.queue.clone();
-        if g.thumb_layer.is_none() { g.thumb_layer = min_ui::UiLayer::new(&dev, w, h).ok(); }
-        let Some(layer) = g.thumb_layer.as_mut() else { return };
-        if layer.size() != (w, h) { layer.resize(&dev, w, h); }
-        let scene = layer.scene_mut(); scene.reset();
-        min_ui::paint::image(scene, &min_ui::paint::image_rgba8(vw, vh, img.0), kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
-        let geo = annotate::Geo { rect: [0.0, 0.0, w as f64, h as f64], px_per_src: w as f64 / dw.max(1) as f64 };
-        for s in &ss { annotate::draw(scene, s, &geo); }
-        layer.render(&dev, &q);
-        let px = min_present::readback::read_rgba8(&dev, &q, layer.texture(), w, h);
+        let frame = min_ui::paint::image_rgba8(vw, vh, img.0);
+        let Some(px) = render_tiled(&mut g.thumb_layer, &dev, &q, w, h, |scene, ox, oy| {
+            min_ui::paint::image(scene, &frame, kurbo::Rect::new(-ox, -oy, w as f64 - ox, h as f64 - oy));
+            let geo = annotate::Geo { rect: [-ox, -oy, w as f64, h as f64], px_per_src: w as f64 / dw.max(1) as f64 };
+            for s in &ss { annotate::draw(scene, s, &geo); }
+        }) else { return };
         let path = annotated.to_string_lossy().into_owned();
         std::thread::Builder::new().name("note-annotated".into()).spawn(move || write_png_rgba8(&path, &px, w, h)).ok();
         if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
@@ -2227,6 +2224,30 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for e in std::fs::read_dir(from)? { let e = e?; let (src, dst) = (e.path(), to.join(e.file_name())); if src.is_dir() { copy_tree(&src, &dst)?; } else if !dst.exists() { std::fs::copy(&src, &dst)?; } }
     Ok(())
+}
+/// A picture drawn by the interface's renderer at any size. vello draws a target of more than 256 of its 256-px bins
+/// wrongly (linebender/vello#680; it says "Trying to paint too large image"): a note on a 5040 x 3780 clip got an
+/// annotated picture without its frame, and so a card without its picture (the user 2026-11-18). A target within that
+/// bound is drawn in one go, as before; a larger one in tiles of at most 4096 x 2048, joined here. `paint` draws the
+/// whole picture moved by the tile's origin (the two numbers it is given, to subtract).
+pub(crate) fn render_tiled(slot: &mut Option<min_ui::UiLayer>, dev: &wgpu::Device, q: &wgpu::Queue, w: u32, h: u32, mut paint: impl FnMut(&mut vello::Scene, f64, f64)) -> Option<Vec<u8>> {
+    let (w, h) = (w.max(1), h.max(1));
+    let (tw, th) = if w.div_ceil(256) * h.div_ceil(256) <= 256 { (w, h) } else { (w.min(4096), h.min(2048)) };
+    let mut out = vec![0u8; w as usize * h as usize * 4];
+    let mut y = 0;
+    while y < h { let hh = th.min(h - y); let mut x = 0;
+        while x < w { let ww = tw.min(w - x);
+            if slot.is_none() { *slot = min_ui::UiLayer::new(dev, ww, hh).ok(); }
+            let layer = slot.as_mut()?; if layer.size() != (ww, hh) { layer.resize(dev, ww, hh); }
+            let scene = layer.scene_mut(); scene.reset(); paint(scene, x as f64, y as f64);
+            layer.render(dev, q);
+            let px = min_present::readback::read_rgba8(dev, q, layer.texture(), ww, hh);
+            if px.len() < ww as usize * hh as usize * 4 { return None }
+            let n = ww as usize * 4;
+            for row in 0..hh as usize { let d = ((y as usize + row) * w as usize + x as usize) * 4; out[d..d + n].copy_from_slice(&px[row * n..(row + 1) * n]); }
+            x += ww; }
+        y += hh; }
+    Some(out)
 }
 /// Each clip's file → the routing chosen for its item in the bin (a playlist's clips keep their own).
 fn clip_routing(project: &qcv_project::ProjectManager, tl: &qcv_timeline::Timeline) -> std::collections::HashMap<String, qcv_player::RoutingMode> {

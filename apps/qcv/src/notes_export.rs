@@ -93,14 +93,10 @@ impl crate::App {
         let g = self.gpu.as_mut()?;
         let (dw, _) = g.presenter.engine.display_dims();
         let (dev, q) = (g.presenter.engine.device.clone(), g.presenter.engine.queue.clone());
-        if g.thumb_layer.is_none() { g.thumb_layer = min_ui::UiLayer::new(&dev, w, h).ok(); }
-        let layer = g.thumb_layer.as_mut()?;
-        if layer.size() != (w, h) { layer.resize(&dev, w, h); }
-        let scene = layer.scene_mut(); scene.reset();
-        let geo = annotate::Geo { rect: [0.0, 0.0, w as f64, h as f64], px_per_src: w as f64 / dw.max(1) as f64 };
-        for s in &ss { annotate::draw(scene, s, &geo); }
-        layer.render(&dev, &q);
-        let px = min_present::readback::read_rgba8(&dev, &q, layer.texture(), w, h);
+        let px = crate::render_tiled(&mut g.thumb_layer, &dev, &q, w, h, |scene, ox, oy| {
+            let geo = annotate::Geo { rect: [-ox, -oy, w as f64, h as f64], px_per_src: w as f64 / dw.max(1) as f64 };
+            for s in &ss { annotate::draw(scene, s, &geo); }
+        })?;
         min_image::write::png_rgba8_bytes(&px, w, h).ok()
     }
 }
