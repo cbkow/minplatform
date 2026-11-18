@@ -4620,3 +4620,8 @@ msgstr "Nach minNotes exportieren…"
 msgctxt "NotesPanel"
 msgid "Export to minNotes needs a clip that is a file"
 msgstr "Der Export nach minNotes braucht einen Clip, der eine Datei ist"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Pen (click for corners, drag for curves; Enter to finish, the first point to close)"
+msgstr "Zeichenstift (Klick für Ecken, Ziehen für Kurven; Enter beendet, der erste Punkt schließt)"

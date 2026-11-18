@@ -18,8 +18,8 @@ pub const HEIGHT_DEFAULT: f64 = 340.0; pub const HEIGHT_MIN: f64 = 320.0; pub co
 const CARD_W: f64 = 240.0; const THUMB_H: f64 = 135.0; const ADD_W: f64 = 120.0; const PICK_W: f64 = 240.0;
 /// the tools: Spectrum 2's M action buttons (32) in one column, rounded like the panels (the walk)
 const TOOL_B: f64 = 32.0; const TOOL_GAP: f64 = 4.0; const TOOLS_W: f64 = TOOL_B;
-pub const TOOLS: [(Tool, &str, &str); 7] = [
-    (Tool::Select, "cursor", "Select (drag to move, corners to scale, Del to remove; click again to exit)"), (Tool::Freehand, "pencil-simple", "Freehand"),
+pub const TOOLS: [(Tool, &str, &str); 8] = [
+    (Tool::Select, "cursor", "Select (drag to move, corners to scale, Del to remove; click again to exit)"), (Tool::Freehand, "pencil-simple", "Freehand"), (Tool::Pen, "pen-nib", "Pen (click for corners, drag for curves; Enter to finish, the first point to close)"),
     (Tool::Rectangle, "rectangle", "Rectangle"), (Tool::Oval, "circle", "Oval"), (Tool::Arrow, "arrow-right", "Arrow"), (Tool::Line, "line-segment", "Line"),
     (Tool::Eraser, "eraser", "Erase stroke (click strokes to remove)")];
 

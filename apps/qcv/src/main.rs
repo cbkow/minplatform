@@ -629,7 +629,8 @@ impl App {
             N::Addressed(k, on) => self.annot.set_addressed(&k, on),
             N::Delete(k) => { self.annot.delete_note(&k); self.review_note_check(); }
             // QCView: clicking the armed tool again disarms it (annotation mode off, the panel stays)
-            N::Tool(t) => { match t { Some(t) => { self.annot.tool = t; self.annot.active = true; } None => { self.annot.active = false; self.annot.escape(); } } self.annot.selected = None; }
+            N::Tool(t) => { if self.annot.pen_live() { if let Some(cur) = self.current_note() && let Some(c) = self.annot.pen_finish(&cur) { self.after_annotation(c); } }   // another tool ends the pen's path as it stands
+                match t { Some(t) => { self.annot.tool = t; self.annot.active = true; } None => { self.annot.active = false; self.annot.escape(); } } self.annot.selected = None; }
             N::Color(h) => { if let Some(c) = qcv_notes_color(&h) { self.annot.color = c; self.settings.set_str(settings::k::ANNOTATION_COLOR, &h); } }
             N::Width(w) => self.annot.width = w,
             N::Height(h) => { self.settings.set_float(settings::k::NOTES_DRAWER_HEIGHT, h); }
@@ -2594,6 +2595,8 @@ impl ApplicationHandler for App {
                 } }
                 // annotating (row 215): Esc cancels the stroke (else clears the selection), Delete removes the selected stroke, Ctrl+4 the mode
                 if pressed && self.annot.active {
+                    // the pen's path ends as it stands on Enter or Escape (open; two anchors make a path)
+                    if self.annot.pen_live() && matches!(event.logical_key, Key::Named(NamedKey::Escape | NamedKey::Enter)) { if let Some(cur) = self.current_note() && let Some(c) = self.annot.pen_finish(&cur) { self.after_annotation(c); } self.annot.escape(); if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } return }
                     if matches!(event.logical_key, Key::Named(NamedKey::Escape)) && self.annot.escape() { if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } return }
                     if self.annot.tool == annotate::Tool::Select && matches!(event.logical_key, Key::Named(NamedKey::Delete | NamedKey::Backspace)) { if let Some(cur) = self.current_note() && let Some(c) = self.annot.delete_selected(&cur) { self.after_annotation(c); } return }
                 }
@@ -2664,7 +2667,7 @@ impl ApplicationHandler for App {
                 let (x, y) = (position.x, position.y);
                 self.pointer(if state == ElementState::Pressed { min_ui::Event::Down { x, y, button: b } } else { min_ui::Event::Up { x, y, button: b } });
             }
-            WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.mods = qcv_player::Mods { shift: st.shift_key(), ctrl: st.control_key() || st.meta_key(), alt: st.alt_key(), keypad: false }; if let Some(g) = self.gpu.as_mut() { g.bar.set_shift(self.mods.shift); } }
+            WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.annot.alt = st.alt_key(); self.mods = qcv_player::Mods { shift: st.shift_key(), ctrl: st.control_key() || st.meta_key(), alt: st.alt_key(), keypad: false }; if let Some(g) = self.gpu.as_mut() { g.bar.set_shift(self.mods.shift); } }
             WindowEvent::DragEntered { id: tid, position } => {
                 self.drag_pos = position.map(|p| (p.x, p.y));
                 let ok = el.data_transfer(tid).map(|dt| dt.has_type(&TypeHint::UriList)).unwrap_or(false) && self.drag_pos.is_none_or(|(x, y)| self.drop_target(x, y).is_some());

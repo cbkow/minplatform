@@ -4612,3 +4612,8 @@ msgstr "minNotes로 내보내기…"
 msgctxt "NotesPanel"
 msgid "Export to minNotes needs a clip that is a file"
 msgstr "minNotes로 내보내려면 파일로 된 클립이 필요합니다"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Pen (click for corners, drag for curves; Enter to finish, the first point to close)"
+msgstr "펜 (클릭하면 모서리, 드래그하면 곡선. Enter로 마침, 첫 점을 누르면 닫힘)"

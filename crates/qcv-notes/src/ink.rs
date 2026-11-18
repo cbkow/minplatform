@@ -102,7 +102,8 @@ pub fn geometry(s: &Stroke, rect: [f64; 4], px_per_src: f64) -> Geometry {
     match s.tool {
         Tool::Freehand => {
             if pts.len() == 1 { let c = map(pts[0]); let mut b = BezPath::new(); b.move_to(c); b.line_to(c); g.paths.push(b); return g }   // a dot (round caps)
-            g.paths.push(through(&pts.iter().map(|p| map(*p)).collect::<Vec<_>>()));
+            // a pen path draws by its anchors (exact at every size); every other freehand by the curve through its points
+            match &s.path { Some(p) => g.paths.push(p.bez(map)), None => g.paths.push(through(&pts.iter().map(|p| map(*p)).collect::<Vec<_>>())) }
         }
         Tool::Rectangle if pts.len() >= 3 => { g.paths.push(Rect::from_points(map(pts[0]), map(pts[2])).to_path(0.1)); }
         Tool::Oval if pts.len() >= 2 => { let c = map(pts[0]); g.paths.push(Ellipse::new(c, (pts[1][0] * rect[2], pts[1][1] * rect[3]), 0.0).to_path(0.1)); }
@@ -167,7 +168,7 @@ mod tests {
             for i in 1..240 { let t = i as f64 * 0.005; let ph: f64 = (t * hz) % 1.0; let tri = if ph < 0.5 { ph * 4.0 - 1.0 } else { 3.0 - ph * 4.0 }; last = [0.3 + 0.25 * t, 0.5 + amp * tri]; s.push(last, t); }
             let pts = s.end(last, 1.2);
             for (w, h) in [(700.0, 394.0), (1400.0, 788.0), (1920.0, 1080.0), (3840.0, 2160.0), (5040.0, 3780.0)] {
-                let g = geometry(&Stroke { id: "x".into(), tool: Tool::Freehand, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, filled: false, is_modeled: true, points: pts.clone() }, [0.0, 0.0, w, h], w / 1920.0);
+                let g = geometry(&Stroke { id: "x".into(), tool: Tool::Freehand, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, filled: false, is_modeled: true, points: pts.clone(), path: None }, [0.0, 0.0, w, h], w / 1920.0);
                 let poly: Vec<Point> = pts.iter().map(|p| Point::new(p[0] * w, p[1] * h)).collect();
                 let mut flat = vec![]; kurbo::flatten(g.paths[0].elements().iter().copied(), 0.05, |el| if let PathEl::MoveTo(p) | PathEl::LineTo(p) = el { flat.push(p) });
                 let worst = flat.iter().map(|p| poly.windows(2).map(|s| off(*p, s[0], s[1])).fold(f64::MAX, f64::min)).fold(0.0, f64::max);
@@ -177,7 +178,7 @@ mod tests {
     }
     #[test]
     fn shapes_land_on_the_picture() {
-        let st = |tool, pts: Vec<[f64; 2]>| Stroke { id: "x".into(), tool, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, filled: false, is_modeled: true, points: pts };
+        let st = |tool, pts: Vec<[f64; 2]>| Stroke { id: "x".into(), tool, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, filled: false, is_modeled: true, points: pts, path: None };
         let rect = [100.0, 50.0, 960.0, 540.0];
         let g = geometry(&st(Tool::Rectangle, vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]), rect, 0.5);
         assert_eq!(g.paths[0].bounding_box(), Rect::new(100.0, 50.0, 1060.0, 590.0)); assert_eq!(g.width, 3.0);

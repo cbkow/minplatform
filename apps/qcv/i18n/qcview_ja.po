@@ -4612,3 +4612,8 @@ msgstr "minNotes に書き出す…"
 msgctxt "NotesPanel"
 msgid "Export to minNotes needs a clip that is a file"
 msgstr "minNotes への書き出しには、ファイルのクリップが必要です"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Pen (click for corners, drag for curves; Enter to finish, the first point to close)"
+msgstr "ペン (クリックで角、ドラッグで曲線。Enter で終了、最初の点で閉じる)"

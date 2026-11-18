@@ -4612,3 +4612,8 @@ msgstr "导出到 minNotes…"
 msgctxt "NotesPanel"
 msgid "Export to minNotes needs a clip that is a file"
 msgstr "导出到 minNotes 需要一个文件形式的片段"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Pen (click for corners, drag for curves; Enter to finish, the first point to close)"
+msgstr "钢笔 (单击添加角点，拖动添加曲线；按 Enter 结束，点击第一个点闭合)"
