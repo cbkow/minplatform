@@ -182,6 +182,8 @@ struct Files { /// handed over with a file to make a note of (`minnotes:///…/x
     /// the pointer is over a video's words' bar: the bar and the whole of the words (drawn over it when they were cut)
     /// the pen's path under way on a picture or a PDF page (row 579), and where: the block, its page's frame in the window now, the record as it was, the page, the page's size
     /// the path tools on a page (row 580): the points picked; a hold's page (block, frame, record before, page, size, its lines, the path's place in them); what is drawn of the selected path this frame (frame, the page's width, the line)
+    /// the arrow on a page (row 583): the strokes picked beside `psel` (the same block's); its box being dragged (block, frame, page, size, the two corners in the page's units)
+    psel_more: Vec<String>, pbox: Option<(BlockId, Rect, usize, (f64, f64), kurbo::Point, kurbo::Point)>,
     pedit: ink::PathEdit, pctx: Option<(BlockId, Rect, String, usize, (f64, f64), Vec<ink::Line>, usize)>, pshow: Option<(Rect, f64, ink::Line)>,
     path_live: Option<ink::PathLive>, path_host: Option<(BlockId, Rect, String, usize, (f64, f64))>,
     cap_over: Option<(Rect, String, String, bool)>, finished: bool, hand: Option<(std::path::PathBuf, std::path::PathBuf)>, hand_asked: bool, /// the handed file's addition: when it lands the collection is saved (the place was chosen for a document)
@@ -567,7 +569,7 @@ impl App {
             let at = kurbo::Affine::translate((frame.x0, frame.y0)) * kurbo::Affine::scale(1.0 / k); let (pen, w) = (self.files.pen.unwrap_or([1.0, 0.0, 0.0, 1.0]), self.files.pen_w.unwrap_or(6.0) as f64);
             if let Some(line) = self.files.gest.as_ref().filter(|g| g.block == *id).and_then(|g| g.live(pen, w * s * k)) { scene.push_clip_layer(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, frame); ink::drawn(&line, kurbo::Point::ORIGIN).paint(scene, at); scene.pop_layer(); }
             if let Some((_, sid)) = self.files.psel.as_ref().filter(|p| p.0 == *id) { let now = self.ed.doc.get(*id).and_then(|b| match &b.kind { Kind::Media { descriptor } => serde_json::from_str::<serde_json::Value>(descriptor).ok(), _ => None }).unwrap_or(rec);
-                if let Some(l) = ink::page_lines(&now, ink::page_no(&now), size).into_iter().find(|l| l.s.id == *sid) { let b = at.transform_rect_bbox(ink::bounds(&l)).inflate(2.0 * s, 2.0 * s); scene.stroke(&kurbo::Stroke::new(1.5 * s).with_dashes(0.0, [4.0 * s, 3.0 * s]), kurbo::Affine::IDENTITY, paint::accent(), None, &b); } } }
+                for l in ink::page_lines(&now, ink::page_no(&now), size).into_iter().filter(|l| l.s.id == *sid || self.files.psel_more.contains(&l.s.id)) { let b = at.transform_rect_bbox(ink::bounds(&l)).inflate(2.0 * s, 2.0 * s); scene.stroke(&kurbo::Stroke::new(1.5 * s).with_dashes(0.0, [4.0 * s, 3.0 * s]), kurbo::Affine::IDENTITY, paint::accent(), None, &b); } } }
         // the current picture: an outline, and a handle at each corner to resize it by
         // (not while a drawing tool is armed: the picture is being drawn on, not arranged)
         let current = (!self.blank && !self.reading && self.files.tool.is_none() && !self.grab.as_ref().is_some_and(|x| x.dragging) && self.ed.run_len() == 1).then(|| self.ed.handle_block()).flatten()
@@ -624,12 +626,12 @@ impl App {
             let rec: serde_json::Value = match host { studio::Host::Block(id) => match self.ed.doc.get(id).map(|b| &b.kind) { Some(Kind::Media { descriptor }) => serde_json::from_str(descriptor).ok(), _ => None }, studio::Host::Card(id) => self.files.canvas.as_ref().and_then(|cv| cv.els.iter().find(|e| e.id == id)).and_then(|e| serde_json::from_str(&e.record).ok()) }.unwrap_or_default();
             let rec_w = rec.get("w").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let (pen, pen_w) = (self.files.pen.unwrap_or([1.0, 0.0, 0.0, 1.0]), self.files.pen_w.unwrap_or(6.0) as f64);
-            let (gest, psel, spage) = (self.files.gest.as_ref(), self.files.psel.as_ref(), self.files.spage);
+            let (gest, psel, spage, more) = (self.files.gest.as_ref(), self.files.psel.as_ref(), self.files.spage, &self.files.psel_more);
             let ink = |page: usize, size: (f64, f64)| -> (Vec<ink::Line>, f64, Option<Rect>) { if rec_w <= 0.0 || size.0 <= 0.0 { return (vec![], 0.0, None) }
                 let mut lines = ink::page_lines(&rec, page, (rec_w, rec_w * size.1 / size.0));
                 // the stroke being drawn (as it will be kept), and the picked stroke's box - on the page they belong to
                 if let (Some(g), Some((pg, fr))) = (gest, spage) { if pg == page && fr.width() > 0.0 { if let Some(l) = g.live(pen, pen_w * s * rec_w / fr.width()) { lines.push(l); } } }
-                let picked = psel.zip(spage).filter(|(_, sp)| sp.0 == page).and_then(|((_, sid), _)| lines.iter().find(|l| l.s.id == *sid).map(ink::bounds));
+                let picked = psel.zip(spage).filter(|(_, sp)| sp.0 == page).and_then(|((_, sid), _)| lines.iter().filter(|l| l.s.id == *sid || more.contains(&l.s.id)).map(ink::bounds).reduce(|a, b| a.union(b)));
                 (lines, rec_w, picked) };
             let area = Rect::new(0.0, self.top, w as f64, if self.foot.rect.height() > 0.0 { self.foot.rect.y0 } else { h as f64 });
             // (a picture's view is handed the picture as the note has it - made for the size it is shown at here)
@@ -639,6 +641,9 @@ impl App {
         }
         // (these two are drawn AFTER the large view: drawn before it, as at first, they lay under it - a path's anchors and
         // handles were not seen on a PDF's page or a picture opened large, the user's walk 2026-11-18)
+        // the arrow's box on a page
+        if let Some((_, frame, _, size, a, b)) = self.files.pbox.as_ref() { let at = kurbo::Affine::translate((frame.x0, frame.y0)) * kurbo::Affine::scale(frame.width() / size.0.max(1e-9)); let r = Rect::from_points(at * *a, at * *b); let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff);
+            scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, blue.multiply_alpha(0.19), None, &r); scene.stroke(&kurbo::Stroke::new(1.0), kurbo::Affine::IDENTITY, blue, None, &r); }
         // a path tool on a page: the selected pen path's anchors and handles, the box being dragged
         if let Some((frame, pw, l)) = self.files.pshow.as_ref() { self.files.pedit.paint(scene, l, kurbo::Affine::translate((frame.x0, frame.y0)) * kurbo::Affine::scale(frame.width() / pw.max(1e-9))); }
         else if let (Some((a, b)), Some((_, frame, _, _, size, ..))) = (self.files.pedit.marquee, self.files.pctx.as_ref()) { let at = kurbo::Affine::translate((frame.x0, frame.y0)) * kurbo::Affine::scale(frame.width() / size.0.max(1e-9)); let r = Rect::from_points(at * a, at * b); let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff);
@@ -2267,8 +2272,32 @@ impl App {
             self.files.psel = None; self.files.iblock = Some((id, frame, d)); self.page_path_show(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return true
         }
         let (g, picked) = ink::Gesture::press(pick, id, &d, &rec, on, frame, kurbo::Point::new((x - frame.x0) * k, (y - frame.y0) * k), pen_pressure(), (self.pen_now().1 / 2.0).max(5.0) * s * k, 4.0 * s * k);
-        if pick == ink::Pick::Select { self.files.psel = picked.map(|i| (id, i)); } else { self.files.psel = None; }
+        let mut g = g;
+        if pick == ink::Pick::Select {
+            // the strokes picked so far, on this block (several: row 583)
+            let set: Vec<String> = self.files.psel.as_ref().filter(|p| p.0 == id).map(|p| std::iter::once(p.1.clone()).chain(self.files.psel_more.iter().cloned()).collect()).unwrap_or_default();
+            match picked {
+                // Shift on a stroke: it joins the picked ones or leaves them (nothing is dragged)
+                Some(i) if self.mods.0 => { let left: Vec<String> = if set.contains(&i) { set.into_iter().filter(|x| *x != i).collect() } else { set.into_iter().chain(std::iter::once(i)).collect() };
+                    self.files.psel = left.first().map(|f| (id, f.clone())); self.files.psel_more = left.into_iter().skip(1).collect(); self.files.iblock = Some((id, frame, d)); if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
+                // one of several picked: they are dragged together; any other stroke: it alone
+                Some(i) => { if set.len() > 1 && set.contains(&i) { g.also = set.into_iter().filter(|x| *x != i).collect(); } else { self.files.psel = Some((id, i)); self.files.psel_more.clear(); } }
+                // empty ground: the arrow's box - the strokes it touches are picked at the release (Shift: added)
+                None => { if !self.mods.0 { self.files.psel = None; self.files.psel_more.clear(); } let p = kurbo::Point::new((x - frame.x0) * k, (y - frame.y0) * k);
+                    self.files.pbox = Some((id, frame, g.page, g.size, p, p)); self.files.iblock = Some((id, frame, d)); if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
+            }
+        } else { self.files.psel = None; self.files.psel_more.clear(); }
         self.files.iblock = Some((id, frame, d)); self.files.gest = Some(g); self.page_show(); if let Some(g) = &self.gpu { g.window.request_redraw(); } true
+    }
+    /// The arrow's box follows the pointer; at the release the strokes it touches are the picked ones.
+    fn page_box_move(&mut self, x: f64, y: f64) { if let Some((_, frame, _, size, _, b)) = self.files.pbox.as_mut() { let k = size.0 / frame.width().max(1e-9); *b = kurbo::Point::new((x - frame.x0) * k, (y - frame.y0) * k); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+    fn page_box_release(&mut self) {
+        let Some((id, _, page, size, a, b)) = self.files.pbox.take() else { return }; let r = Rect::from_points(a, b);
+        let rec: serde_json::Value = match if self.ink_card(id) { self.files.studio.as_ref().and_then(|st| self.studio_record(st.host)) } else { self.ed.doc.get(id).and_then(|bl| match &bl.kind { Kind::Media { descriptor } => Some(descriptor.clone()), _ => None }) } { Some(d) => serde_json::from_str(&d).unwrap_or_default(), None => return };
+        let mut set: Vec<String> = if self.mods.0 { self.files.psel.as_ref().filter(|p| p.0 == id).map(|p| std::iter::once(p.1.clone()).chain(self.files.psel_more.iter().cloned()).collect()).unwrap_or_default() } else { vec![] };
+        if r.width() > 1.0 || r.height() > 1.0 { for l in ink::page_lines(&rec, page, size) { if !set.contains(&l.s.id) && ink::touches(&l, r) { set.push(l.s.id.clone()); } } }
+        self.files.psel = set.first().map(|f| (id, f.clone())); self.files.psel_more = set.into_iter().skip(1).collect();
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     /// The picked stroke of the current page when it is a pen path: its block, the page's frame, the record, the page, its
     /// size, the page's lines and the path's place among them (what the path tools work on).
@@ -2364,7 +2393,10 @@ impl App {
         // (in the PDF view the picked stroke is on the page last pressed, wherever the pointer is now)
         let (frame, on) = match (self.files.studio.is_some(), self.files.spage) { (true, Some((pg, fr))) => (fr, Some(pg)), _ => (frame, None) };
         let (size, page) = (ink::page_size(&rec, frame), on.unwrap_or_else(|| ink::page_no(&rec))); let mut lines = ink::page_lines(&rec, page, size);
-        let Some(i) = lines.iter().position(|l| l.s.id == sid) else { return false }; if !f(&mut lines[i]) { lines.remove(i); self.files.psel = None; }
+        // (every picked stroke: the one and those beside it, row 583)
+        let ids: Vec<String> = std::iter::once(sid).chain(self.files.psel_more.iter().cloned()).collect(); let mut any = false; let mut gone = false;
+        for sid in &ids { if let Some(i) = lines.iter().position(|l| &l.s.id == sid) { any = true; if !f(&mut lines[i]) { lines.remove(i); gone = true; } } }
+        if !any { return false } if gone { self.files.psel = None; self.files.psel_more.clear(); }
         self.page_keep(id, &d, page, size, &lines); if let Some(g) = &self.gpu { g.window.request_redraw(); } true
     }
     /// A key while a picture or a PDF block is the current one: the tools' keys (the canvas's), Escape, Delete. True: it was the page's.
@@ -3933,6 +3965,7 @@ impl ApplicationHandler for App {
                 self.set_cursor();
                 if taken { return }
                 // a note's row dragged from the sidebar towards the canvas
+                if self.files.pbox.is_some() { self.page_box_move(position.x, position.y); return }
                 if self.files.pctx.is_some() { self.page_pt_move(position.x, position.y); return }
                 if self.files.path_live.is_some() && self.page_path_move(position.x, position.y) { return }
                 if self.files.gest.is_some() { self.page_drag(position.x, position.y); return }
@@ -3995,7 +4028,7 @@ impl ApplicationHandler for App {
                     self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } } }
                 // the PDF studio (row 362) has every press in its place (the band's and the footer's stay theirs)
                 if !self.ctx.is_open() && !self.pal.is_open() && !self.modal() { if let Some(st) = self.files.studio.as_mut() { if st.area().contains(kurbo::Point::new(position.x, position.y)) { let (back, head) = (st.pointer(&e), st.in_head(position.y) || st.in_strip(position.x, position.y)); if let Some(g) = &self.gpu { g.window.request_redraw(); } if back { self.studio_close(); return }
-                    if state == ElementState::Released { if self.files.pctx.is_some() { self.page_pt_release(position.x, position.y); } if self.files.path_live.as_ref().is_some_and(|p| p.down) { if self.files.path_live.as_mut().is_some_and(|p| p.release()) { self.page_path_end(true); } } if self.files.gest.is_some() { self.page_release(position.x, position.y); } if let Some(st) = self.files.studio.as_mut() { st.select_end(); } }
+                    if state == ElementState::Released { if self.files.pbox.is_some() { self.page_box_release(); } if self.files.pctx.is_some() { self.page_pt_release(position.x, position.y); } if self.files.path_live.as_ref().is_some_and(|p| p.down) { if self.files.path_live.as_mut().is_some_and(|p| p.release()) { self.page_path_end(true); } } if self.files.gest.is_some() { self.page_release(position.x, position.y); } if let Some(st) = self.files.studio.as_mut() { st.select_end(); } }
                     else if !head { let drew = !self.reading && self.page_press(position.x, position.y);
                         // no tool in hand (or reading): the press begins a selection of the page's text (row 367c)
                         if !drew { if let Some(st) = self.files.studio.as_mut() { if let Some(f) = st.find.as_mut() { f.field.focused = false; } st.select_press(position.x, position.y); } } }
@@ -4087,6 +4120,7 @@ impl ApplicationHandler for App {
                     if track.inflate(4.0 * s, 12.0 * s).contains(pt) { if self.video_start(id, false) { if let Some(p) = self.player.as_mut() { p.t.begin_scrub(); p.scrub = true; } self.video_scrub(position.x); } return }
                     if strip.contains(pt) { self.video_toggle(id); return } } }
                 // a picture or a PDF's page with a drawing tool armed (row 325): the gesture is the page's
+                if state == ElementState::Released && self.files.pbox.is_some() { self.page_box_release(); return }
                 if state == ElementState::Released && self.files.pctx.is_some() { self.page_pt_release(position.x, position.y); return }
                 if state == ElementState::Released && self.files.path_live.as_ref().is_some_and(|p| p.down) { if self.files.path_live.as_mut().is_some_and(|p| p.release()) { self.page_path_end(true); } return }
                 if state == ElementState::Released && self.files.gest.is_some() { self.page_release(position.x, position.y); return }

@@ -251,14 +251,15 @@ impl PathEdit {
 enum Doing { Draw { tool: Ink, from: Point, to: Point, sm: Option<qcv_notes::ink::Smoother>, marks: Vec<(usize, f64)>, pressed: bool }, Rub { last: Point }, Move { id: String, last: Point }, Idle }
 /// A gesture on a page of a note's block, from the press to the release, in the page's units. The page's strokes as the
 /// gesture has them now are `lines`; the record as it was at the press is `before` (the whole gesture is ONE step).
-pub struct Gesture { pub block: mn_doc::BlockId, pub page: usize, pub size: (f64, f64), pub before: String, pub lines: Vec<Line>, pub changed: bool, doing: Doing, t0: std::time::Instant }
+pub struct Gesture { pub block: mn_doc::BlockId, pub page: usize, pub size: (f64, f64), pub before: String, pub lines: Vec<Line>, pub changed: bool, doing: Doing, t0: std::time::Instant, /// the other picked strokes, moved with the one that is dragged (row 583)
+    pub also: Vec<String> }
 impl Gesture {
     /// A press at `p`. `picked`: the stroke the pointer tool took (None with it: nothing was under it). `reach`: the eraser's.
     #[allow(clippy::too_many_arguments)]
     /// `on`: the page drawn on when it is not the one the record shows (the PDF view has every page; row 362).
     pub fn press(pick: Pick, block: mn_doc::BlockId, descriptor: &str, rec: &Value, on: Option<usize>, frame: Rect, p: Point, pressure: Option<f64>, reach: f64, slack: f64) -> (Gesture, Option<String>) {
         let size = page_size(rec, frame); let page = on.unwrap_or_else(|| page_no(rec)); let lines = page_lines(rec, page, size); let t0 = std::time::Instant::now();
-        let mut g = Gesture { block, page, size, before: descriptor.to_string(), lines, changed: false, doing: Doing::Idle, t0 }; let mut picked = None;
+        let mut g = Gesture { block, page, size, before: descriptor.to_string(), lines, changed: false, doing: Doing::Idle, t0, also: vec![] }; let mut picked = None;
         match pick {
             Pick::Select => { if let Some(l) = g.lines.iter().rev().find(|l| hit(l, p, slack)) { picked = Some(l.s.id.clone()); g.doing = Doing::Move { id: l.s.id.clone(), last: p }; } }
             Pick::Draw(Ink::Eraser) => { g.doing = Doing::Rub { last: p }; g.rub(p, p, reach); }
@@ -273,7 +274,7 @@ impl Gesture {
         match &mut self.doing {
             Doing::Draw { to, sm, marks, pressed, .. } => { *to = p; if let Some(s) = sm.as_mut() { s.push([p.x / 1000.0, p.y / 1000.0], t); marks.push((s.points().len(), pressure.unwrap_or(1.0))); } *pressed |= pressure.is_some(); false }
             Doing::Rub { last } => { let a = *last; *last = p; self.changed = false; self.rub(a, p, reach); let now = self.changed; self.changed |= was; now }
-            Doing::Move { id, last } => { let d = p - *last; *last = p; let id = id.clone(); if let Some(l) = self.lines.iter_mut().find(|l| l.s.id == id) { *l = placed(l, 1.0, d); self.changed = true; true } else { false } }
+            Doing::Move { id, last } => { let d = p - *last; *last = p; let id = id.clone(); let also = self.also.clone(); let mut any = false; for l in self.lines.iter_mut().filter(|l| l.s.id == id || also.contains(&l.s.id)) { *l = placed(l, 1.0, d); any = true; } if any { self.changed = true; } any }
             Doing::Idle => false,
         }
     }
@@ -290,6 +291,18 @@ impl Gesture {
             if let Some(l) = line_of(tool, from, p, pen, &marks, pressed, color, width, least) { self.lines.push(settled(l, (width / 60.0).clamp(0.02, KEEP))); self.changed = true; } }
         self.changed
     }
+}
+/// A box touches a stroke: a point of its line is inside, or a stretch of it crosses the box's edge (the arrow's box, row 583).
+pub fn touches(l: &Line, r: Rect) -> bool {
+    let q = &l.s.points;
+    let pts: Vec<Point> = match l.s.tool {
+        Tool::Rectangle if q.len() >= 3 => { let b = Rect::from_points(pt(q[0]), pt(q[2])); vec![Point::new(b.x0, b.y0), Point::new(b.x1, b.y0), Point::new(b.x1, b.y1), Point::new(b.x0, b.y1), Point::new(b.x0, b.y0)] }
+        Tool::Oval if q.len() >= 2 => (0..=48).map(|i| { let a = i as f64 / 48.0 * std::f64::consts::TAU; Point::new(q[0][0] + q[1][0].abs() * a.cos(), q[0][1] + q[1][1].abs() * a.sin()) }).collect(),
+        _ => q.iter().map(|p| pt(*p)).collect(),
+    };
+    let cross = |a: Point, b: Point, c: Point, d: Point| { let o = |p: Point, q: Point, x: Point| (q.x - p.x) * (x.y - p.y) - (q.y - p.y) * (x.x - p.x); o(a, b, c) * o(a, b, d) < 0.0 && o(c, d, a) * o(c, d, b) < 0.0 };
+    let corners = [Point::new(r.x0, r.y0), Point::new(r.x1, r.y0), Point::new(r.x1, r.y1), Point::new(r.x0, r.y1)];
+    pts.iter().any(|p| r.contains(*p)) || pts.windows(2).any(|w| (0..4).any(|i| cross(w[0], w[1], corners[i], corners[(i + 1) % 4])))
 }
 /// What a stroke paints as, in the sheet's units from `origin` (its element's corner, so a moved element is drawn from
 /// the same picture): lines stroked at `width` with round ends, and shapes filled (an arrow's head; a pressed line's body).
