@@ -62,7 +62,8 @@ pub struct Annotations {
     pub notes: Vec<Note>, pub selected: Option<String>, /// Alt is held (the app says): a handle moves alone - its opposite stays (a broken, cusp point)
     pub alt: bool, /// Shift is held (the app says): a press on an anchor adds it to the picked ones, or takes it out
     pub shift: bool, /// the selected pen path's picked anchors (the point tool; Delete takes them out)
-    sel_anchors: Vec<usize>,
+    sel_anchors: Vec<usize>, /// the point tool's box being dragged over empty ground (its two corners): the anchors inside are picked at the release
+    marquee: Option<([f64; 2], [f64; 2])>,
     live: Option<Live>, drag: Option<Drag>, undo: Vec<Step>, redo: Vec<Step>, t0: std::time::Instant,
     /// minNotes' `VideoNotesModel` rules (canon §4.5): keys deleted here since the last save (a merge never brings them
     /// back), the sidecar's signature after our own write (its echo is no reload), the last poll
@@ -70,7 +71,7 @@ pub struct Annotations {
 }
 
 impl Annotations {
-    pub fn new() -> Annotations { Annotations { active: false, tool: Tool::Freehand, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, media: None, stream: None, notes: vec![], selected: None, alt: false, shift: false, sel_anchors: vec![], live: None, drag: None, undo: vec![], redo: vec![], t0: std::time::Instant::now(), tombstones: Default::default(), disk_sig: None, last_poll: std::time::Instant::now() } }
+    pub fn new() -> Annotations { Annotations { active: false, tool: Tool::Freehand, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, media: None, stream: None, notes: vec![], selected: None, alt: false, shift: false, sel_anchors: vec![], marquee: None, live: None, drag: None, undo: vec![], redo: vec![], t0: std::time::Instant::now(), tombstones: Default::default(), disk_sig: None, last_poll: std::time::Instant::now() } }
     /// A media file loaded (or none): its notes from the sidecar; the history starts over (per clip).
     pub fn load(&mut self, media: Option<&Path>) {
         self.stream = None;
@@ -124,7 +125,7 @@ impl Annotations {
     }
     pub fn note_at(&self, cur: &Cur) -> Option<&Note> { self.notes.iter().find(|n| cur.matches(n)) }
     pub fn strokes_at(&self, cur: &Cur) -> Vec<Stroke> { self.note_at(cur).map(|n| strokes::parse(n.annotation.as_ref())).unwrap_or_default() }
-    pub fn drawing(&self) -> bool { self.live.is_some() || self.drag.is_some() }
+    pub fn drawing(&self) -> bool { self.live.is_some() || self.drag.is_some() || self.marquee.is_some() }
     fn t(&self) -> f64 { self.t0.elapsed().as_secs_f64() }
 
     // ---- pointer (normalized picture coordinates; outside 0..1 allowed) ----
@@ -186,6 +187,9 @@ impl Annotations {
                 // ground lets the picked points go (the path stays selected, the strip with it)
                 match self.hit(p, cur, geo).filter(|id| self.strokes_at(cur).iter().any(|s| &s.id == id && s.path.is_some())) {
                     Some(id) => { if self.selected.as_ref() != Some(&id) { self.selected = Some(id); } self.sel_anchors.clear(); }
+                    // the point tool on empty ground: a box is dragged, and the anchors inside it are picked at the release
+                    // (the user 2026-11-18); a plain click there lets the picked points go
+                    None if tool == Tool::PathSelect => self.marquee = Some((p, p)),
                     None => self.sel_anchors.clear(),
                 }
             }
@@ -196,6 +200,7 @@ impl Annotations {
     /// Returns a committed edit (the eraser commits as it passes over strokes).
     pub fn motion(&mut self, p: [f64; 2], cur: &Cur, geo: &Geo, pressed: bool) -> Option<Committed> {
         let t = self.t();
+        if let Some(m) = self.marquee.as_mut() { m.1 = p; return None }
         match &mut self.live {
             Some(Live::Ink(s, touched)) => { s.push(p, t); *touched |= inside(p); return None }
             Some(Live::Shape { b, .. }) => { *b = p; return None }
@@ -268,6 +273,21 @@ impl Annotations {
         None
     }
     pub fn release(&mut self, p: [f64; 2], cur: &Cur, geo: &Geo) -> Option<Committed> {
+        // the point tool's box: the anchors inside it are the picked ones (Shift: added to those already picked) - of the
+        // selected pen path, or, with none selected, of the first pen path that has an anchor inside, which becomes it
+        if let Some((a, _)) = self.marquee.take() {
+            let (x0, y0, x1, y1) = (a[0].min(p[0]), a[1].min(p[1]), a[0].max(p[0]), a[1].max(p[1]));
+            let inside = |pp: &PenPath| -> Vec<usize> { pp.anchors.iter().enumerate().filter(|(_, n)| n.p[0] >= x0 && n.p[0] <= x1 && n.p[1] >= y0 && n.p[1] <= y1).map(|(i, _)| i).collect() };
+            let strokes = self.strokes_at(cur);
+            let found = match self.selected.as_ref().and_then(|id| strokes.iter().find(|s| &s.id == id)).and_then(|s| s.path.as_ref().map(|pp| (s.id.clone(), inside(pp)))) {
+                Some(f) => Some(f),
+                None => strokes.iter().rev().filter_map(|s| s.path.as_ref().map(|pp| (s.id.clone(), inside(pp)))).find(|(_, v)| !v.is_empty()),
+            };
+            let mut picked = if self.shift { std::mem::take(&mut self.sel_anchors) } else { vec![] };
+            if let Some((id, v)) = found { if self.selected.as_ref() != Some(&id) { if v.is_empty() { self.sel_anchors = picked; return None } self.selected = Some(id); picked.clear(); } for i in v { if !picked.contains(&i) { picked.push(i); } } }
+            self.sel_anchors = picked;
+            let _ = geo; return None
+        }
         if let Some(d) = self.drag.take() {
             if !d.moved { if let Some((i, 3)) = d.node { return self.edit_path(&d.id, cur, |pp| turn(pp, i)) } return None }
             let key = d.before.timecode.clone(); let after = self.notes.iter().find(|n| n.timecode == key).cloned();
@@ -382,7 +402,7 @@ impl Annotations {
         if let Some(d) = self.dir() { let dir = io::images_dir(&d); let _ = std::fs::remove_file(dir.join(io::image_filename(key))); let _ = std::fs::remove_file(dir.join(io::annotated_filename(key))); }
     }
     /// QCView: Escape cancels the stroke in progress, else clears the selection. True when it did something.
-    pub fn escape(&mut self) -> bool { if self.live.take().is_some() { return true } self.sel_anchors.clear(); self.selected.take().is_some() }
+    pub fn escape(&mut self) -> bool { if self.marquee.take().is_some() { return true } if self.live.take().is_some() { return true } self.sel_anchors.clear(); self.selected.take().is_some() }
     pub fn undo(&mut self) -> Option<Committed> { let s = self.undo.pop()?; let key = s.key.clone(); match &s.before { Some(n) => self.put(n.clone()), None => self.remove_note(&key) } self.redo.push(s); self.save(); self.selected = None; Some(Committed { key, new_note: false }) }
     pub fn redo(&mut self) -> Option<Committed> { let s = self.redo.pop()?; let key = s.key.clone(); match &s.after { Some(n) => self.put(n.clone()), None => self.remove_note(&key) } self.undo.push(s); self.save(); self.selected = None; Some(Committed { key, new_note: false }) }
 
@@ -428,13 +448,17 @@ impl Annotations {
         // the selection: QCView's #0189f1 outline + corner handles, here on screen only
         if let Some(id) = &self.selected { if let Some(s) = self.strokes_at(cur).into_iter().find(|s| &s.id == id) {
             // a path tool at work: the path's anchors and handles, not the box (the arrow's)
-            if let (true, Some(pp)) = (self.tool.is_path(), &s.path) { paint_nodes(scene, &pp.anchors, geo, &self.sel_anchors); return }
-            let Some(bb) = self.sel_box(&s, geo) else { return };
-            let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff);
-            scene.stroke(&KStroke::new(1.5), Affine::IDENTITY, blue, None, &bb);
-            for c in [bb.origin(), Point::new(bb.x1, bb.y0), Point::new(bb.x1, bb.y1), Point::new(bb.x0, bb.y1)] { scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, blue, None, &kurbo::Rect::from_center_size(c, (8.0, 8.0))); }
+            if let (true, Some(pp)) = (self.tool.is_path(), &s.path) { paint_nodes(scene, &pp.anchors, geo, &self.sel_anchors); }
+            else if let Some(bb) = self.sel_box(&s, geo) {
+                let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff);
+                scene.stroke(&KStroke::new(1.5), Affine::IDENTITY, blue, None, &bb);
+                for c in [bb.origin(), Point::new(bb.x1, bb.y0), Point::new(bb.x1, bb.y1), Point::new(bb.x0, bb.y1)] { scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, blue, None, &kurbo::Rect::from_center_size(c, (8.0, 8.0))); }
+            }
 
         } }
+        // the point tool's box (on screen only)
+        if let Some((a, b)) = self.marquee { let r = kurbo::Rect::from_points(geo.to_px(a), geo.to_px(b)); let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff);
+            scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0x30), None, &r); scene.stroke(&KStroke::new(1.0), Affine::IDENTITY, blue, None, &r); }
         // the pen at work (on screen only): the piece the next click would add, the anchors, the newest one's handles
         if let Some(Live::Pen(pl)) = &self.live {
             let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff);
