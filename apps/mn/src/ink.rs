@@ -369,8 +369,9 @@ pub fn reduce(pts: &[[f64; 2]], pr: Option<&[f64]>, w: f64, tol: f64) -> (Vec<[f
 /// a freehand line loses the part passed over and what stays are lines of their own (new ids); a shape goes whole.
 pub fn rub(l: &Line, a: Point, b: Point, r: f64) -> Option<Vec<Line>> {
     if bounds(l).inflate(r, r).intersect(Rect::from_points(a, b).inflate(r, r)).area() <= 0.0 { return None }
-    if let Some(pp) = &l.s.path { return rub_path(l, pp, a, b, r) }
-    if l.s.tool != Tool::Freehand { let n = ((b - a).hypot() / (r / 2.0).max(0.25)).ceil().max(1.0) as usize; return (0..=n).any(|i| hit(l, a + (b - a) * (i as f64 / n as f64), r - l.s.width / 2.0)).then(Vec::new) }
+    // a pen path goes WHOLE, as the shapes do (the user 2026-11-18, after a day of cutting it: "go back to erase being like in
+    // QCview: full strokes. This feels like something that is hard to get right"); only a line drawn by hand is rubbed through
+    if l.s.tool != Tool::Freehand || l.s.path.is_some() { let n = ((b - a).hypot() / (r / 2.0).max(0.25)).ceil().max(1.0) as usize; return (0..=n).any(|i| hit(l, a + (b - a) * (i as f64 / n as f64), r - l.s.width / 2.0)).then(Vec::new) }
     let reach = r.max(l.s.width / 4.0); let gone = |p: Point| seg_dist(p, a, b) < reach;
     // points close enough together that no stretch of the line can cross the eraser between two of them
     let step = (reach / 2.0).max(0.25); let (src, spr) = (&l.s.points, l.pressures.as_deref());
@@ -388,37 +389,6 @@ pub fn rub(l: &Line, a: Point, b: Point, r: f64) -> Option<Vec<Line>> {
         let (p, z) = reduce(&p, spr.map(|_| &z[..]), l.s.width, KEEP);
         Line { s: Stroke { id: strokes::new_id(), points: p, path: None, ..l.s.clone() }, pressures: z } }).collect())
 }
-/// The rubber through a pen path: what is left are PATHS - each the very stretch of the curve that stayed, cut where the
-/// rubber's edge crossed it (the cubic pieces are subdivided there). Row 579 first left plain lines; they were drawn
-/// through the few points a flattened curve has and did not lie on the curve they came from (the user 2026-11-18: "our
-/// erase tool is not so precise on erasing curves"). A closed path that is cut opens; its stretch over the old seam is one.
-fn rub_path(l: &Line, pp: &qcv_notes::strokes::PenPath, a: Point, b: Point, r: f64) -> Option<Vec<Line>> {
-    use kurbo::{CubicBez, ParamCurve, ParamCurveArclen};
-    let an = &pp.anchors; let n = an.len(); if n < 2 { return None } let pieces = if pp.closed { n } else { n - 1 };
-    let seg = |k: usize| { let (x, y) = (an[k % pieces.max(1) % n], an[(k % pieces.max(1) + 1) % n]); CubicBez::new(pt(x.p), pt(x.hout), pt(y.hin), pt(y.p)) };
-    let at = |u: f64| { let k = (u.floor() as usize).min(pieces - 1); seg(k).eval(u - k as f64) };
-    let reach = r.max(l.s.width / 4.0); let gone = |p: Point| seg_dist(p, a, b) < reach;
-    // places along the path (piece + how far along it) close enough that no stretch can cross the rubber between two
-    let step = (reach / 2.0).max(0.25); let mut us: Vec<f64> = vec![];
-    for k in 0..pieces { let m = (seg(k).arclen(0.5) / step).ceil().max(1.0) as usize; for i in 0..m { us.push(k as f64 + i as f64 / m as f64); } } us.push(pieces as f64);
-    if !us.iter().any(|u| gone(at(*u))) { return None }
-    // where the path leaves the rubber, between a place that went and one that stays
-    let edge = |inside: f64, outside: f64| { let (mut lo, mut hi) = (inside, outside); for _ in 0..16 { let m = (lo + hi) / 2.0; if gone(at(m)) { lo = m } else { hi = m } } hi };
-    let mut runs: Vec<(f64, f64)> = vec![]; let mut cur: Option<f64> = None;
-    for i in 0..us.len() { if gone(at(us[i])) { if let Some(s0) = cur.take() { runs.push((s0, edge(us[i], us[i - 1]))); } } else if cur.is_none() { cur = Some(if i > 0 { edge(us[i - 1], us[i]) } else { us[i] }); } }
-    if let Some(s0) = cur { runs.push((s0, pieces as f64)); }
-    // a closed path: the stretch that runs to its end and the one that starts at its start are one, over the seam
-    if pp.closed && runs.len() >= 2 && runs[0].0 == 0.0 && runs[runs.len() - 1].1 == pieces as f64 { let first = runs.remove(0); let last = runs.len() - 1; runs[last].1 = pieces as f64 + first.1; }
-    Some(runs.into_iter().filter_map(|(u0, u1)| {
-        let mut cs: Vec<CubicBez> = vec![]; let mut u = u0;
-        while u < u1 - 1e-9 { let k = u.floor(); let end = (k + 1.0).min(u1); cs.push(seg(k as usize).subsegment((u - k)..(end - k))); u = end; }
-        if cs.is_empty() || cs.iter().map(|c| c.arclen(0.5)).sum::<f64>() <= 0.5 { return None }
-        let q = |p: Point| [p.x, p.y]; let mut anchors = vec![qcv_notes::strokes::Anchor { p: q(cs[0].p0), hin: q(cs[0].p0), hout: q(cs[0].p1) }];
-        for (i, c) in cs.iter().enumerate() { anchors.push(qcv_notes::strokes::Anchor { p: q(c.p3), hin: q(c.p2), hout: cs.get(i + 1).map(|nx| q(nx.p1)).unwrap_or(q(c.p3)) }); }
-        let path = qcv_notes::strokes::PenPath { anchors, closed: false };
-        Some(Line { s: Stroke { id: strokes::new_id(), points: path.flatten_in(1.0), path: Some(path), ..l.s.clone() }, pressures: None })
-    }).collect())
-}
 
 #[cfg(test)]
 mod tests {
@@ -435,19 +405,9 @@ mod tests {
         // settled: its points are not thinned; placed: the anchors move with the points
         assert_eq!(settled(l.clone(), 0.5).s.points.len(), l.s.points.len());
         let m = placed(&l, 2.0, Vec2::new(10.0, 20.0)); assert_eq!(m.s.path.as_ref().unwrap().anchors[1].p, [1010.0, 620.0]);
-        // the rubber through its middle: two paths, each a stretch of the very curve (every point of theirs lies on it)
-        let left = rub(&l, Point::new(300.0, 100.0), Point::new(300.0, 200.0), 12.0).unwrap();
-        assert_eq!(left.len(), 2); assert!(left.iter().all(|x| x.s.path.as_ref().is_some_and(|p| !p.closed) && x.s.tool == Tool::Freehand));
-        let whole: Vec<Point> = path.flatten_in(0.01).into_iter().map(pt).collect();
-        for piece in &left { for q in piece.s.path.as_ref().unwrap().flatten_in(0.5) { let d = whole.windows(2).map(|w| seg_dist(pt(q), w[0], w[1])).fold(f64::MAX, f64::min); assert!(d < 0.05, "a point of what is left is {d} off the curve"); } }
-        // their ends stand at the rubber's edge: 12 from its line, on either side
-        let ends = [pt(*left[0].s.points.last().unwrap()), pt(left[1].s.points[0])];
-        for e in ends { let d = seg_dist(e, Point::new(300.0, 100.0), Point::new(300.0, 200.0)); assert!((d - 12.0).abs() < 0.2, "an end is {d} from the rubber's line"); }
-        // a closed path cut once is ONE open path, over its seam
-        let ring = PenPath { anchors: vec![Anchor::corner([100.0, 100.0]), Anchor::corner([400.0, 100.0]), Anchor::corner([400.0, 400.0]), Anchor::corner([100.0, 400.0])], closed: true };
-        let lr = Line { s: Stroke { id: "r".into(), tool: Tool::Freehand, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, filled: false, is_modeled: true, points: ring.flatten_in(1.0), path: Some(ring) }, pressures: None };
-        let cut = rub(&lr, Point::new(250.0, 90.0), Point::new(250.0, 110.0), 10.0).unwrap();
-        assert_eq!(cut.len(), 1); assert_eq!(cut[0].s.path.as_ref().unwrap().anchors.len(), 6, "the seam's corner and the three others between the two cut ends");
+        // the rubber anywhere on it: the whole path goes (as a shape does); beside it: nothing
+        assert_eq!(rub(&l, Point::new(300.0, 100.0), Point::new(300.0, 200.0), 12.0), Some(vec![]));
+        assert_eq!(rub(&l, Point::new(300.0, 400.0), Point::new(300.0, 420.0), 12.0), None);
     }
     fn line(tool: Tool, pts: Vec<[f64; 2]>, pr: Option<Vec<f64>>) -> Line { Line { s: Stroke { id: "s".into(), tool, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, filled: false, is_modeled: tool == Tool::Freehand, points: pts, path: None }, pressures: pr } }
     fn el(l: &Line) -> Element { let (b, record) = write(l); Element { id: mn_doc::BlockId::new(), kind: "ink".into(), x: b.x0, y: b.y0, w: b.width(), h: b.height(), z: 1, parent: None, record, locked: false } }
