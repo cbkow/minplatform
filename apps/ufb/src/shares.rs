@@ -198,6 +198,11 @@ pub fn connect(s: &Share, ui: bool) -> (State, bool) {
     if !up { return (State::Unreachable(format!("{} does not answer.", s.server)), false) }
     match platform::connect(s, ui) { Ok(()) => { let st = resolve(s, &mounts(), &|p| p.is_dir()); if st.root().is_some() { (st, true) } else { (State::Unreachable("The system connected it, but it is not in its list.".into()), false) } } Err(st) => (st, false) }
 }
+/// What Windows remembers of drive letters, as a line (a scripted look; nothing elsewhere).
+pub fn remembered_text() -> String {
+    #[cfg(windows)] { platform::remembered().iter().map(|(l, r)| format!("{l}: {r}")).collect::<Vec<_>>().join(", ") }
+    #[cfg(not(windows))] { String::new() }
+}
 /// A share THIS application connected is disconnected (never another's: the caller knows which are ours).
 pub fn disconnect(root: &Path) -> Result<(), String> { platform::disconnect(root) }
 
@@ -236,8 +241,27 @@ mod platform {
 /// The letter a share is given on Windows: the one asked for, else the first free one from Z down (as Explorer
 /// offers them). `taken`: the letters in use. None: the one asked for is taken, or none is free.
 #[cfg_attr(not(windows), allow(dead_code))]
+#[allow(dead_code)]
 pub fn pick_letter(wanted: &str, taken: &[char]) -> Option<char> {
     match wanted.trim().chars().next().map(|c| c.to_ascii_uppercase()) { Some(c) if c.is_ascii_alphabetic() => (!taken.contains(&c)).then_some(c), _ => ('D'..='Z').rev().find(|c| !taken.contains(c)) }
+}
+/// The letter a share is connected under on Windows (row 592), knowing what Windows REMEMBERS: a drive mapped
+/// "reconnect at sign-in" whose share is not connected now holds its letter although the system's list of drives
+/// does not show it - a connect on it is refused (1202). `taken`: the letters in use now; `remembered`: each
+/// remembered letter and what it is for (`\\server\share`); `remote`: what is to be connected.
+/// The letter Windows remembers for this very share is taken up again; one remembered for another share is passed
+/// over, or - when it is the letter asked for - said.
+pub fn choose_letter(wanted: &str, taken: &[char], remembered: &[(char, String)], remote: &str) -> Result<char, String> {
+    let ours = |r: &str| r.trim_end_matches('\\').eq_ignore_ascii_case(remote.trim_end_matches('\\'));
+    let other = |c: char| remembered.iter().find(|(l, r)| *l == c && !ours(r));
+    if let Some(w) = letter_of(wanted).and_then(|l| l.chars().next()) {
+        if taken.contains(&w) { return Err(format!("The letter {w}: is in use. Choose another (Drive Letter\u{2026}).")) }
+        if let Some((_, r)) = other(w) { return Err(format!("Windows remembers {w}: for {r}. Choose another letter (Drive Letter\u{2026}), or disconnect that drive in Explorer.")) }
+        return Ok(w)
+    }
+    if !wanted.trim().is_empty() { return Err("A drive letter is one letter, A to Z.".into()) }
+    if let Some((l, _)) = remembered.iter().find(|(l, r)| ours(r) && !taken.contains(l)) { return Ok(*l) }
+    ('D'..='Z').rev().find(|c| !taken.contains(c) && other(*c).is_none()).ok_or_else(|| "No drive letter is free.".into())
 }
 /// A typed drive letter (`j`, `J:`, `J:\`) as `J`; none: it is not one.
 pub fn letter_of(text: &str) -> Option<String> { let t = text.trim().trim_end_matches('\\').trim_end_matches(':'); let mut it = t.chars(); match (it.next(), it.next()) { (Some(c), None) if c.is_ascii_alphabetic() => Some(c.to_ascii_uppercase().to_string()), _ => None } }
@@ -249,21 +273,46 @@ mod platform {
     /// A drive letter that Windows REMEMBERS (row 444: it is there again at the next sign-in, whether or not this
     /// application runs - Windows' own doing, as a drive mapped in Explorer). Windows' own sign-in window only when the
     /// user asked; no name and no password of ours.
+    /// The drives Windows remembers (mapped "reconnect at sign-in"), connected now or not: the letter, what it is for.
+    pub fn remembered() -> Vec<(char, String)> {
+        let mut out = vec![]; let mut h = windows::Win32::Foundation::HANDLE::default();
+        if unsafe { WNetOpenEnumW(RESOURCE_REMEMBERED, RESOURCETYPE_DISK, WNET_OPEN_ENUM_USAGE(0), None, &mut h) }.0 != 0 { return out }
+        // (u64s: the entries are structures with pointers in them, and are read where the system wrote them)
+        let mut buf = vec![0u64; 4096];
+        loop {
+            let (mut count, mut size) = (u32::MAX, (buf.len() * 8) as u32);
+            if unsafe { WNetEnumResourceW(h, &mut count, buf.as_mut_ptr() as *mut core::ffi::c_void, &mut size) }.0 != 0 { break }
+            let items = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const NETRESOURCEW, count as usize) };
+            for r in items { if r.lpLocalName.is_null() || r.lpRemoteName.is_null() { continue }
+                let (local, remote) = unsafe { (r.lpLocalName.to_string().unwrap_or_default(), r.lpRemoteName.to_string().unwrap_or_default()) };
+                if let Some(c) = local.chars().next().filter(|c| c.is_ascii_alphabetic()) { out.push((c.to_ascii_uppercase(), remote)); } }
+        }
+        unsafe { let _ = WNetCloseEnum(h); }
+        out
+    }
     pub fn connect(s: &Share, ui: bool) -> Result<(), State> {
-        let bits = unsafe { GetLogicalDrives() }; let taken: Vec<char> = ('A'..='Z').filter(|c| bits & (1 << (*c as u32 - 'A' as u32)) != 0).collect();
-        let Some(letter) = pick_letter(&s.letter, &taken) else { return Err(State::Unreachable(if s.letter.trim().is_empty() { "No drive letter is free.".into() } else { format!("The letter {}: is in use. Choose another (Drive Letter\u{2026}).", s.letter.trim().to_uppercase()) })) };
+        let bits = unsafe { GetLogicalDrives() }; let mut taken: Vec<char> = ('A'..='Z').filter(|c| bits & (1 << (*c as u32 - 'A' as u32)) != 0).collect();
         // (Windows connects the share itself; what the address names under it is a folder on that drive)
-        let top = s.share.split('/').next().unwrap_or(""); let mut remote: Vec<u16> = format!("\\\\{}\\{top}", s.server).encode_utf16().chain([0]).collect(); let mut local: Vec<u16> = format!("{letter}:").encode_utf16().chain([0]).collect();
-        let res = NETRESOURCEW { dwType: RESOURCETYPE_DISK, lpLocalName: PWSTR(local.as_mut_ptr()), lpRemoteName: PWSTR(remote.as_mut_ptr()), ..Default::default() };
-        let flags = NET_CONNECT_FLAGS(CONNECT_UPDATE_PROFILE.0 | if ui { CONNECT_INTERACTIVE.0 } else { 0 });
-        let code = unsafe { WNetAddConnection2W(&res, PCWSTR::null(), PCWSTR::null(), flags) }.0;
-        match code { 0 => Ok(()),
-            // who signs in is not known, or was refused; another name is already signed in to that server
-            5 | 86 | 1326 | 1327 | 1330 | 1331 | 2202 | 1219 | 1244 => Err(State::SignIn),
-            1223 => Err(State::NotConnected),   // the sign-in was left
-            85 => Err(State::Unreachable(format!("The letter {letter}: is in use."))),
-            53 | 67 | 2250 => Err(State::Unreachable(format!("{} has no share of that name.", s.server))),
-            c => Err(State::Unreachable(format!("Windows could not connect it ({c})."))) }
+        let top = s.share.split('/').next().unwrap_or(""); let unc = format!("\\\\{}\\{top}", s.server); let kept = remembered();
+        loop {
+            let letter = match choose_letter(&s.letter, &taken, &kept, &unc) { Ok(l) => l, Err(why) => return Err(State::Unreachable(why)) };
+            let mut remote: Vec<u16> = unc.encode_utf16().chain([0]).collect(); let mut local: Vec<u16> = format!("{letter}:").encode_utf16().chain([0]).collect();
+            let res = NETRESOURCEW { dwType: RESOURCETYPE_DISK, lpLocalName: PWSTR(local.as_mut_ptr()), lpRemoteName: PWSTR(remote.as_mut_ptr()), ..Default::default() };
+            let flags = NET_CONNECT_FLAGS(CONNECT_UPDATE_PROFILE.0 | if ui { CONNECT_INTERACTIVE.0 } else { 0 });
+            let code = unsafe { WNetAddConnection2W(&res, PCWSTR::null(), PCWSTR::null(), flags) }.0;
+            eprintln!("UFB: share {:?}: Windows was asked for {unc} as {letter}: and answered {code}", s.name);
+            return match code { 0 => Ok(()),
+                // who signs in is not known, or was refused; another name is already signed in to that server
+                5 | 86 | 1326 | 1327 | 1330 | 1331 | 2202 | 1219 | 1244 => Err(State::SignIn),
+                1223 => Err(State::NotConnected),   // the sign-in was left
+                // the letter is in use after all, or Windows remembers it for something else (1202): the next one
+                // when no letter was asked for; said when one was
+                85 | 1202 if s.letter.trim().is_empty() && taken.len() < 26 => { taken.push(letter); continue }
+                85 => Err(State::Unreachable(format!("The letter {letter}: is in use. Choose another (Drive Letter\u{2026})."))),
+                1202 => Err(State::Unreachable(format!("Windows remembers {letter}: for another share. Choose another letter (Drive Letter\u{2026}), or disconnect that drive in Explorer."))),
+                53 | 67 | 2250 => Err(State::Unreachable(format!("{} has no share of that name.", s.server))),
+                c => Err(State::Unreachable(format!("Windows could not connect it ({c})."))) }
+        }
     }
     /// The drive is let go, and forgotten (it does not come back at sign-in). Not forced: files open on it keep it.
     pub fn disconnect(root: &Path) -> Result<(), String> {
@@ -312,6 +361,14 @@ mod tests {
         assert_eq!(from_json(&to_json(&c)), Some(c));
         // Windows' letters: the one asked for when it is free, else from Z down
         assert_eq!(pick_letter("", &['C', 'Z']), Some('Y')); assert_eq!(pick_letter("j:", &['C']), Some('J')); assert_eq!(pick_letter("J", &['J']), None); assert_eq!(pick_letter("", &('D'..='Z').collect::<Vec<_>>()), None);
+        // what Windows remembers (row 592): a remembered letter is not free; this share's own remembered letter is taken up again
+        let kept = vec![('Z', "\\\\nas\\old".to_string()), ('Q', "\\\\NAS\\Jobs".to_string())];
+        assert_eq!(choose_letter("", &['C'], &kept, "\\\\nas\\other"), Ok('Y'), "Z is remembered for another share");
+        assert_eq!(choose_letter("", &['C'], &kept, "\\\\nas\\jobs"), Ok('Q'), "its own remembered letter");
+        assert_eq!(choose_letter("", &['C', 'Q'], &kept, "\\\\nas\\jobs"), Ok('Y'), "that letter is in use by something else now");
+        assert!(choose_letter("z", &['C'], &kept, "\\\\nas\\other").unwrap_err().contains("Windows remembers Z: for \\\\nas\\old"));
+        assert_eq!(choose_letter("Z:", &['C'], &kept, "\\\\nas\\old"), Ok('Z')); assert!(choose_letter("C", &['C'], &[], "\\\\a\\b").unwrap_err().contains("in use"));
+        assert_eq!(choose_letter("", &['C'], &[], "\\\\a\\b"), Ok('Z')); assert!(choose_letter("", &('A'..='Z').collect::<Vec<_>>(), &[], "\\\\a\\b").is_err());
         assert_eq!(letter_of("j"), Some("J".into())); assert_eq!(letter_of("J:\\"), Some("J".into())); assert_eq!(letter_of("JK"), None); assert_eq!(letter_of("7"), None); assert_eq!(letter_of(""), None);
     }
     #[test]

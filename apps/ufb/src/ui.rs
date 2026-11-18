@@ -2003,6 +2003,7 @@ impl Ui {
             "typed" => { self.edit_path(); self.field.set_text(arg); self.submit_path(); },
             "syncoff" => self.sync_chosen(crate::ctxmenu::SYNC_ONOFF),
             "shares" => eprintln!("UFB_DEMO: shares: {}", self.shares.iter().enumerate().map(|(i, sh)| format!("{} [{}{}{}] {:?}", sh.name, if sh.server.is_empty() { format!("folder {}", sh.local) } else { format!("smb://{}/{}", sh.server, sh.share) }, if sh.jobs { ", jobs" } else { "" }, if sh.ours { ", ours" } else { "" }, (self.share_states.get(i), self.share_holders.contains_key(&sh.id).then_some("held")))).collect::<Vec<_>>().join(" | ")),
+            "remembered" => eprintln!("UFB_DEMO: remembered drives: {}", crate::shares::remembered_text()),
             "joblist" => if let Ok(px) = arg.parse::<f64>() { self.job_w = px.clamp(JOB_LIST_MIN, 1200.0); },
             "pane2toggle" => self.command(Cmd::SecondPane),
             "itemfocus" => if self.job.is_some() { self.focus = Focus::Items; },
