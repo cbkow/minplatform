@@ -4617,3 +4617,23 @@ msgstr "导出到 minNotes 需要一个文件形式的片段"
 msgctxt "NotesPanel"
 msgid "Pen (click for corners, drag for curves; Enter to finish, the first point to close)"
 msgstr "钢笔 (单击添加角点，拖动添加曲线；按 Enter 结束，点击第一个点闭合)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Select points (drag a point or a handle; Shift adds; Del removes)"
+msgstr "选择锚点 (拖动锚点或手柄；Shift 加选；Del 删除)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Add a point (click the path)"
+msgstr "添加锚点 (单击路径)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Remove a point (click it)"
+msgstr "删除锚点 (单击锚点)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Corner or curve (click a point; drag for new handles)"
+msgstr "角点或曲线 (单击锚点；拖动生成新手柄)"

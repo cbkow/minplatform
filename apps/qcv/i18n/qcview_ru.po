@@ -4633,3 +4633,23 @@ msgstr "Для экспорта в minNotes нужен клип, являющи�
 msgctxt "NotesPanel"
 msgid "Pen (click for corners, drag for curves; Enter to finish, the first point to close)"
 msgstr "Перо (щелчок — угол, перетаскивание — кривая; Enter завершает, первая точка замыкает)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Select points (drag a point or a handle; Shift adds; Del removes)"
+msgstr "Выбор точек (перетащите точку или рычаг; Shift добавляет; Del удаляет)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Add a point (click the path)"
+msgstr "Добавить точку (щёлкните по контуру)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Remove a point (click it)"
+msgstr "Удалить точку (щёлкните по ней)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Corner or curve (click a point; drag for new handles)"
+msgstr "Угол или кривая (щёлкните по точке; перетащите для новых рычагов)"

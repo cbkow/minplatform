@@ -4625,3 +4625,23 @@ msgstr "Exportar para o minNotes requer um clipe que seja um arquivo"
 msgctxt "NotesPanel"
 msgid "Pen (click for corners, drag for curves; Enter to finish, the first point to close)"
 msgstr "Caneta (clique para cantos, arraste para curvas; Enter para terminar, o primeiro ponto para fechar)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Select points (drag a point or a handle; Shift adds; Del removes)"
+msgstr "Selecionar pontos (arraste um ponto ou uma alça; Shift adiciona; Del remove)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Add a point (click the path)"
+msgstr "Adicionar um ponto (clique no caminho)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Remove a point (click it)"
+msgstr "Remover um ponto (clique nele)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Corner or curve (click a point; drag for new handles)"
+msgstr "Canto ou curva (clique em um ponto; arraste para novas alças)"

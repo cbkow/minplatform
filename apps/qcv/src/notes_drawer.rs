@@ -24,6 +24,9 @@ pub const TOOLS: [(Tool, &str, &str); 8] = [
     (Tool::Select, "cursor", "Select (drag to move, corners to scale, Del to remove; click again to exit)"), (Tool::Freehand, "pencil-simple", "Freehand"), (Tool::Pen, "pen-nib", "Pen (click for corners, drag for curves; Enter to finish, the first point to close)"),
     (Tool::Rectangle, "rectangle", "Rectangle"), (Tool::Oval, "circle", "Oval"), (Tool::Arrow, "arrow-right", "Arrow"), (Tool::Line, "line-segment", "Line"),
     (Tool::Eraser, "eraser", "Erase stroke (click strokes to remove)")];
+/// The path tools (row 572): a second column beside the Pen's row, there while the Pen is armed or a pen path is selected.
+pub const PATH_TOOLS: [(Tool, &str, &str); 4] = [
+    (Tool::PathSelect, "navigation-arrow", "Select points (drag a point or a handle; Shift adds; Del removes)"), (Tool::PathAdd, "plus-circle", "Add a point (click the path)"), (Tool::PathRemove, "minus-circle", "Remove a point (click it)"), (Tool::PathConvert, "bezier-curve", "Corner or curve (click a point; drag for new handles)")];
 
 #[derive(Clone, Debug, PartialEq)]
 /// `label` = what the card's time line says (a file: the key; a stream: the capture time "HH:mm:ss.zzz"); `sub` = a stream
@@ -54,7 +57,7 @@ pub struct NotesDrawer {
     hbar: ScrollBar, /// the layer-2 panels behind the columns (the colour drawer's treatment)
     panels: [Rect; 4],
     cards: Vec<Card>, rects: Vec<CardRects>, current: Option<String>, clip: String,
-    tools: Vec<ActionButton>, tool: Option<Tool>, picker: ColorPicker, width: Slider, width_v: f32, width_label: Rect,
+    tools: Vec<ActionButton>, path_tools: Vec<ActionButton>, path_strip: bool, tool: Option<Tool>, picker: ColorPicker, width: Slider, width_v: f32, width_label: Rect,
     /// each card's text box (keyed by note); `editing` = the focused one
     areas: HashMap<String, TextArea>, editing: Option<String>, thumbs: HashMap<PathBuf, (SystemTime, peniko::ImageBrush)>,
     hover: Option<(usize, u8)>, add_hover: bool, pub tips: Tooltips,
@@ -66,19 +69,19 @@ pub struct NotesDrawer {
 
 impl NotesDrawer {
     /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
-    pub fn relabel(&mut self) { let f = Self::new(); for (b, n) in self.tools.iter_mut().zip(f.tools) { b.tooltip = n.tooltip; b.label = n.label; } }
+    pub fn relabel(&mut self) { let f = Self::new(); for (b, n) in self.tools.iter_mut().zip(f.tools).chain(self.path_tools.iter_mut().zip(f.path_tools)) { b.tooltip = n.tooltip; b.label = n.label; } }
     pub fn new() -> NotesDrawer {
         let (thumb_tx, thumb_rx) = std::sync::mpsc::channel();
         NotesDrawer { open: false, open_ramp: Ramp::new(0.0, t::RAIL_COLLAPSE_DURATION), rect: Rect::ZERO, scale: 1.0, height: HEIGHT_DEFAULT, split_hover: false, split_drag: None, header: Rect::ZERO, add: Rect::ZERO, cards_area: Rect::ZERO, scroll: 0.0, max_scroll: 0.0, hbar: ScrollBar::horizontal(), panels: [Rect::ZERO; 4],
             cards: vec![], rects: vec![], current: None, clip: String::new(),
-            tools: TOOLS.iter().map(|(_, icon, tip)| ActionButton::new(icon, tr(tip))).collect(), tool: Some(Tool::Freehand), picker: ColorPicker::new("#ff0000"), width: Slider::new(5.0 / 23.0), width_v: 6.0, width_label: Rect::ZERO,
+            tools: TOOLS.iter().map(|(_, icon, tip)| ActionButton::new(icon, tr(tip))).collect(), path_tools: PATH_TOOLS.iter().map(|(_, icon, tip)| ActionButton::new(icon, tr(tip))).collect(), path_strip: false, tool: Some(Tool::Freehand), picker: ColorPicker::new("#ff0000"), width: Slider::new(5.0 / 23.0), width_v: 6.0, width_label: Rect::ZERO,
             areas: HashMap::new(), editing: None, thumbs: HashMap::new(), hover: None, add_hover: false, export: Rect::ZERO, export_hover: false, menu: Menu::new(), tips: Tooltips::default(), stream: None, pill: Rect::ZERO, pill_hover: false, thumb_tx, thumb_rx, thumb_pending: Default::default() }
     }
     pub fn set_open(&mut self, on: bool, now: Instant) { if on != self.open { self.open = on; self.open_ramp.set_target(if on { 1.0 } else { 0.0 }, now); if !on { self.unfocus(); } } }
     pub fn visible_height(&self, now: Instant, scale: f64) -> f64 { (self.height * scale * self.open_ramp.value(now) as f64).round() }
     pub fn splitter_hovered(&self) -> bool { self.split_hover || self.split_drag.is_some() }
     fn unfocus(&mut self) { if let Some(k) = self.editing.take() { if let Some(a) = self.areas.get_mut(&k) { a.focused = false; } } }
-    pub fn animating(&self, now: Instant) -> bool { self.hbar.animating(now) || self.areas.values().any(|a| a.animating(now)) || self.open_ramp.animating(now) || self.tools.iter().any(|b| b.animating(now)) || self.width.animating(now) }
+    pub fn animating(&self, now: Instant) -> bool { self.hbar.animating(now) || self.areas.values().any(|a| a.animating(now)) || self.open_ramp.animating(now) || self.tools.iter().chain(&self.path_tools).any(|b| b.animating(now)) || self.width.animating(now) }
     pub fn tick(&mut self, now: Instant) -> bool { self.poll_thumbs() | self.tips.tick(now) }
     pub fn has_focus(&self) -> bool { self.editing.is_some() || self.picker.focused() }
     /// The state to show; true when it changed.
@@ -87,13 +90,16 @@ impl NotesDrawer {
     pub fn set_stream(&mut self, m: Option<StreamMode>) -> bool {
         if self.stream == m { return false }
         let off = m.as_ref().is_some_and(|m| m.needs_save);
-        for b in &mut self.tools { b.enabled = !off; }
+        for b in self.tools.iter_mut().chain(&mut self.path_tools) { b.enabled = !off; }
         self.stream = m; true
     }
+    /// The path tools' column is there (the Pen is armed, a path tool is, or a pen path is selected). True when it changed.
+    pub fn set_path_strip(&mut self, on: bool) -> bool { if self.path_strip == on { return false } self.path_strip = on; true }
     pub fn sync(&mut self, clip: &str, cards: Vec<Card>, current: Option<String>, tool: Option<Tool>, color: &str, width: f32) -> bool {
         let changed = self.cards != cards || self.current != current || self.tool != tool || self.clip != clip || (self.width_v - width).abs() > 1e-3;
         self.cards = cards; self.current = current; self.tool = tool; self.clip = clip.to_string(); self.width_v = width;
         for (i, b) in self.tools.iter_mut().enumerate() { b.selected = Some(TOOLS[i].0) == tool; }
+        for (i, b) in self.path_tools.iter_mut().enumerate() { b.selected = Some(PATH_TOOLS[i].0) == tool; }
         if !self.width.dragging() { self.width.value = ((width - 1.0) / 23.0).clamp(0.0, 1.0); }
         if !self.picker.dragging() { self.picker.set_hex(color); }
         // the text boxes follow the notes (the focused one keeps what is being typed)
@@ -113,7 +119,8 @@ impl NotesDrawer {
         let ins = t::SPACING_100 as f64 * s; let gap_p = t::SPACING_100 as f64 * s;   // inside a panel; between panels
         // right to left: the colour + width panel, the tools panel, then the add tile and the cards panel
         let pick_panel = Rect::new(body.x1 - PICK_W * s - 2.0 * ins, body.y0, body.x1, body.y1);
-        let tools_panel = Rect::new(pick_panel.x0 - gap_p - TOOLS_W * s - 2.0 * ins, body.y0, pick_panel.x0 - gap_p, body.y1);
+        let tools_w = if self.path_strip { 2.0 * TOOL_B + TOOL_GAP } else { TOOLS_W };
+        let tools_panel = Rect::new(pick_panel.x0 - gap_p - tools_w * s - 2.0 * ins, body.y0, pick_panel.x0 - gap_p, body.y1);
         let add_panel = Rect::new(body.x0, body.y0, body.x0 + ADD_W * s, body.y1);
         let cards_panel = Rect::new(add_panel.x1 + gap_p, body.y0, tools_panel.x0 - gap_p, body.y1);
         self.panels = [add_panel, cards_panel, tools_panel, pick_panel];
@@ -123,6 +130,8 @@ impl NotesDrawer {
         self.width_label = Rect::new(pc.x0, wy, pc.x0 + 48.0 * s, wy + fh); self.width.rect = Rect::new(pc.x0 + 48.0 * s, wy, pc.x1 - 28.0 * s, wy + fh);
         let (tb, tg) = (TOOL_B * s, TOOL_GAP * s);
         for (i, b) in self.tools.iter_mut().enumerate() { let x = tools_panel.x0 + ins; let y = tools_panel.y0 + ins + i as f64 * (tb + tg); b.rect = Rect::new(x, y, x + tb, y + tb); b.corners = Corners::all(t::CORNER_RADIUS_500 as f64 * s); }
+        // the path tools: the second column, from the Pen's row down (off the panel when the column is not there)
+        for (i, b) in self.path_tools.iter_mut().enumerate() { let x = tools_panel.x0 + ins + tb + tg; let y = tools_panel.y0 + ins + (i + 2) as f64 * (tb + tg); b.rect = if self.path_strip { Rect::new(x, y, x + tb, y + tb) } else { Rect::ZERO }; b.corners = Corners::all(t::CORNER_RADIUS_500 as f64 * s); }
         // the add tile, then the cards
         // QCView's two tiles stacked: Add note here over Export notes
         let split = add_panel.y0 + (add_panel.height() - gap_p) * 0.6;
@@ -184,6 +193,7 @@ impl NotesDrawer {
         if let Event::Down { x, y, .. } = *e { if let Some(k) = self.editing.clone() { if !self.areas.get(&k).is_some_and(|a| a.hit(x, y)) { if let Some(c) = self.commit_edit() { cmds.push(c); } dirty = true; } } }
         for (k, a) in self.areas.iter_mut() { if a.pointer(e, fonts) { dirty = true; } if a.focused && self.editing.as_deref() != Some(k) { self.editing = Some(k.clone()); } }
         for (i, b) in self.tools.iter_mut().enumerate() { if let Response::Clicked = b.event(e, now) { let tl = TOOLS[i].0; cmds.push(Cmd::Tool(if self.tool == Some(tl) { None } else { Some(tl) })); dirty = true; } }
+        if self.path_strip { for (i, b) in self.path_tools.iter_mut().enumerate() { if let Response::Clicked = b.event(e, now) { let tl = PATH_TOOLS[i].0; cmds.push(Cmd::Tool(if self.tool == Some(tl) { None } else { Some(tl) })); dirty = true; } } }
         let (c, d) = self.picker.event(e, fonts); dirty |= d; if let Some(c) = c { cmds.push(Cmd::Color(c)); }
         let (v, d) = self.width.event(e, now, self.scale); dirty |= d; if let Some(v) = v { cmds.push(Cmd::Width((1.0 + v * 23.0).round())); }
         // the cards and the add tile
@@ -220,6 +230,7 @@ impl NotesDrawer {
         // tooltips: the tools, the card buttons
         let tip = pt.filter(|_| inside).and_then(|p| {
             for (i, b) in self.tools.iter().enumerate() { if b.rect.contains(p) { return Some((100 + i as u64, b.rect, tr(TOOLS[i].2).to_string())) } }
+            if self.path_strip { for (i, b) in self.path_tools.iter().enumerate() { if b.rect.contains(p) { return Some((120 + i as u64, b.rect, tr(PATH_TOOLS[i].2).to_string())) } } }
             if self.pill_hover { return Some((400, self.pill, tr(if self.stream.as_ref().is_some_and(|m| m.review.is_some()) { "back to live" } else { "freeze" }).to_string())) }
             if self.export.contains(p) && !self.menu.is_open() { return Some((300, self.export, if self.cards.is_empty() { tr("No notes to export yet.").to_string() } else { tr("%1 notes will be exported.").replace("%1", &self.cards.len().to_string()) })) }
             match hover { Some((i, 1)) => Some((200 + i as u64 * 2, self.rects[i].addressed, tr("Mark addressed").to_string())), Some((i, 2)) => Some((201 + i as u64 * 2, self.rects[i].delete, tr("Delete note").to_string())), _ => None }
@@ -342,6 +353,7 @@ impl NotesDrawer {
         scene.pop_layer();
         self.hbar.paint(scene, now);
         for b in &self.tools { b.paint(scene, fonts, s, now); }
+        if self.path_strip { for b in &self.path_tools { b.paint(scene, fonts, s, now); } }
         self.picker.paint(scene, fonts, s);
         let wl = fonts.layout(tr("Width:"), Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_LABEL_COLOR));
         min_ui::fonts::draw_layout(scene, &wl, Affine::translate((self.width_label.x0, mid(&wl, self.width_label))));

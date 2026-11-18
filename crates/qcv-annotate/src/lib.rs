@@ -14,7 +14,13 @@ use vello::Scene;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool { Select, Freehand, /// the pen (row 566): a path of anchors and handles, click by click
-    Pen, Rectangle, Oval, Arrow, Line, Eraser }
+    Pen, Rectangle, Oval, Arrow, Line, Eraser, /// the path tools (row 572), on the selected pen path: points picked and moved
+    PathSelect, /// a point put on a piece, the shape kept
+    PathAdd, /// a point taken out
+    PathRemove, /// a corner ↔ a smooth point; dragged: new handles
+    PathConvert }
+impl Tool { /// One of the four path tools.
+    pub fn is_path(self) -> bool { matches!(self, Tool::PathSelect | Tool::PathAdd | Tool::PathRemove | Tool::PathConvert) } }
 impl Tool { fn shape(self) -> Option<STool> { Some(match self { Tool::Freehand => STool::Freehand, Tool::Rectangle => STool::Rectangle, Tool::Oval => STool::Oval, Tool::Arrow => STool::Arrow, Tool::Line => STool::Line, _ => return None }) } }
 
 /// One undo step: the note at `key` before and after (None = absent).
@@ -54,8 +60,9 @@ pub struct Annotations {
     pub media: Option<PathBuf>, /// a live item's notes (plan B1): its folder under the project's `.qcview/streams` + the header
     pub stream: Option<(PathBuf, serde_json::Map<String, serde_json::Value>)>,
     pub notes: Vec<Note>, pub selected: Option<String>, /// Alt is held (the app says): a handle moves alone - its opposite stays (a broken, cusp point)
-    pub alt: bool, /// the selected pen path's anchor last pressed (Delete takes it out; a second press within 0.4 s turns it corner ↔ smooth)
-    sel_anchor: Option<usize>, anchor_click: Option<(usize, std::time::Instant)>,
+    pub alt: bool, /// Shift is held (the app says): a press on an anchor adds it to the picked ones, or takes it out
+    pub shift: bool, /// the selected pen path's picked anchors (the point tool; Delete takes them out)
+    sel_anchors: Vec<usize>,
     live: Option<Live>, drag: Option<Drag>, undo: Vec<Step>, redo: Vec<Step>, t0: std::time::Instant,
     /// minNotes' `VideoNotesModel` rules (canon §4.5): keys deleted here since the last save (a merge never brings them
     /// back), the sidecar's signature after our own write (its echo is no reload), the last poll
@@ -63,7 +70,7 @@ pub struct Annotations {
 }
 
 impl Annotations {
-    pub fn new() -> Annotations { Annotations { active: false, tool: Tool::Freehand, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, media: None, stream: None, notes: vec![], selected: None, alt: false, sel_anchor: None, anchor_click: None, live: None, drag: None, undo: vec![], redo: vec![], t0: std::time::Instant::now(), tombstones: Default::default(), disk_sig: None, last_poll: std::time::Instant::now() } }
+    pub fn new() -> Annotations { Annotations { active: false, tool: Tool::Freehand, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, media: None, stream: None, notes: vec![], selected: None, alt: false, shift: false, sel_anchors: vec![], live: None, drag: None, undo: vec![], redo: vec![], t0: std::time::Instant::now(), tombstones: Default::default(), disk_sig: None, last_poll: std::time::Instant::now() } }
     /// A media file loaded (or none): its notes from the sidecar; the history starts over (per clip).
     pub fn load(&mut self, media: Option<&Path>) {
         self.stream = None;
@@ -134,17 +141,6 @@ impl Annotations {
                 _ => self.live = Some(Live::Pen(PenLive { anchors: vec![Anchor::corner(p)], down: true, press: p, hover: p, closing: false })),
             },
             Tool::Select => {
-                // a selected pen path: its handles, then its anchors, win over everything else
-                if let (Some(id), Some(n)) = (self.selected.clone(), self.note_at(cur).cloned()) && let Some(s) = strokes::parse(n.annotation.as_ref()).into_iter().find(|s| s.id == id) && let Some(path) = &s.path && let Some((i, part)) = node_at(path, geo, geo.to_px(p)) {
-                    if part == 0 {
-                        let now = std::time::Instant::now();
-                        let again = self.anchor_click.is_some_and(|(j, t)| j == i && now.duration_since(t).as_millis() < 400);
-                        self.sel_anchor = Some(i); self.anchor_click = Some((i, now));
-                        if again { self.anchor_click = None; self.edit_path(&id, cur, |pp| turn(pp, i)); return }
-                    }
-                    self.drag = Some(Drag { id, last: p, moved: false, before: n, scale: None, node: Some((i, part)) });
-                    return
-                }
                 // QCView `onSelectPointer`: a corner handle of the selection wins over re-hit-testing (a neighbour can't steal the grab)
                 if let (Some(id), Some(n)) = (self.selected.clone(), self.note_at(cur).cloned()) && let Some(s) = strokes::parse(n.annotation.as_ref()).into_iter().find(|s| s.id == id) {
                     if let Some(c) = self.sel_box(&s, geo).and_then(|bb| corner_at(bb, geo.to_px(p))) {
@@ -155,12 +151,48 @@ impl Annotations {
                     }
                 }
                 let was = self.selected.take(); self.selected = self.hit(p, cur, geo);
-                if was != self.selected { self.sel_anchor = None; self.anchor_click = None; }
+                if was != self.selected { self.sel_anchors.clear(); }
                 if let (Some(id), Some(n)) = (self.selected.clone(), self.note_at(cur).cloned()) { self.drag = Some(Drag { id, last: p, moved: false, before: n, scale: None, node: None }); }
             }
+            t if t.is_path() => self.press_path(t, p, cur, geo),
             t => if let Some(tool) = t.shape() { self.live = Some(Live::Shape { tool, a: p, b: p }); },
         }
     }
+    /// A press with one of the path tools. They work on the SELECTED pen path; a press on another pen path's line selects
+    /// that one instead (so the tools go from path to path without the arrow).
+    fn press_path(&mut self, tool: Tool, p: [f64; 2], cur: &Cur, geo: &Geo) {
+        let pt = geo.to_px(p);
+        let sel = self.selected.clone().and_then(|id| self.strokes_at(cur).into_iter().find(|s| s.id == id)).filter(|s| s.path.is_some());
+        let node = sel.as_ref().and_then(|s| node_at(s.path.as_ref().unwrap(), geo, pt, tool == Tool::PathSelect));
+        let before = self.note_at(cur).cloned();
+        match (tool, sel, node, before) {
+            // the point tool: a handle is dragged; an anchor is picked (Shift: added or taken out) and the picked ones dragged
+            (Tool::PathSelect, Some(s), Some((i, part)), Some(n)) => {
+                if part == 0 {
+                    if self.shift { if let Some(k) = self.sel_anchors.iter().position(|x| *x == i) { self.sel_anchors.remove(k); return } self.sel_anchors.push(i); }
+                    else if !self.sel_anchors.contains(&i) { self.sel_anchors = vec![i]; }
+                }
+                self.drag = Some(Drag { id: s.id, last: p, moved: false, before: n, scale: None, node: Some((i, part)) });
+            }
+            (Tool::PathRemove, Some(s), Some((i, 0)), _) => { if s.path.as_ref().is_some_and(|pp| pp.anchors.len() > 2) { self.sel_anchors.clear(); self.edit_path(&s.id, cur, |pp| { pp.anchors.remove(i); }); } }
+            // convert: the release of a plain click turns the anchor; a drag pulls new handles out of it
+            (Tool::PathConvert, Some(s), Some((i, 0)), Some(n)) => { self.sel_anchors = vec![i]; self.drag = Some(Drag { id: s.id, last: p, moved: false, before: n, scale: None, node: Some((i, 3)) }); }
+            (Tool::PathAdd, Some(s), None, _) if piece_at(s.path.as_ref().unwrap(), geo, pt, s.width * geo.px_per_src / 2.0 + 6.0).is_some() => {
+                let (k, t) = piece_at(s.path.as_ref().unwrap(), geo, pt, s.width * geo.px_per_src / 2.0 + 6.0).unwrap();
+                self.edit_path(&s.id, cur, |pp| split(pp, k, t)); self.sel_anchors = vec![k + 1];
+            }
+            _ => {
+                // nothing of the selected path under the pointer: a pen path's line there becomes the selected one; empty
+                // ground lets the picked points go (the path stays selected, the strip with it)
+                match self.hit(p, cur, geo).filter(|id| self.strokes_at(cur).iter().any(|s| &s.id == id && s.path.is_some())) {
+                    Some(id) => { if self.selected.as_ref() != Some(&id) { self.selected = Some(id); } self.sel_anchors.clear(); }
+                    None => self.sel_anchors.clear(),
+                }
+            }
+        }
+    }
+    /// The selected stroke is a pen path (the path tools have something to work on).
+    pub fn path_selected(&self, cur: &Cur) -> bool { self.selected.as_ref().is_some_and(|id| self.strokes_at(cur).iter().any(|s| &s.id == id && s.path.is_some())) }
     /// Returns a committed edit (the eraser commits as it passes over strokes).
     pub fn motion(&mut self, p: [f64; 2], cur: &Cur, geo: &Geo, pressed: bool) -> Option<Committed> {
         let t = self.t();
@@ -189,12 +221,16 @@ impl Annotations {
                     let mut ss = strokes::parse(n.annotation.as_ref());
                     if let Some(s) = ss.iter_mut().find(|s| s.id == id) && let Some(pp) = s.path.as_mut() && let Some(a) = pp.anchors.get_mut(i) {
                         match part {
-                            0 => { for q in [&mut a.p, &mut a.hin, &mut a.hout] { q[0] += delta[0]; q[1] += delta[1]; } }
+                            // convert, dragged: the anchor's two handles are pulled out anew, in line
+                            3 => { a.hout = p; a.hin = [2.0 * a.p[0] - p[0], 2.0 * a.p[1] - p[1]]; }
+                            0 => {}   // (an anchor: moved below, with every picked one)
                             // a handle: its opposite keeps its length and turns to stay in line (Alt: it stays where it is)
                             _ => { let (mine, other) = if part == 1 { (&mut a.hin, &mut a.hout) } else { (&mut a.hout, &mut a.hin) }; *mine = p;
                                 let (vx, vy) = (p[0] - a.p[0], p[1] - a.p[1]); let (len, ol) = (vx.hypot(vy), (other[0] - a.p[0]).hypot(other[1] - a.p[1]));
                                 if !alt && len > 1e-9 && ol > 1e-9 { *other = [a.p[0] - vx / len * ol, a.p[1] - vy / len * ol]; } }
                         }
+                        // an anchor: every picked one moves with it, each with its handles
+                        if part == 0 { let picked = self.sel_anchors.clone(); for (k, a) in pp.anchors.iter_mut().enumerate() { if k == i || picked.contains(&k) { for q in [&mut a.p, &mut a.hin, &mut a.hout] { q[0] += delta[0]; q[1] += delta[1]; } } } }
                         s.points = pp.flatten();
                     }
                     n.annotation = Some(strokes::to_data(&ss));
@@ -233,7 +269,7 @@ impl Annotations {
     }
     pub fn release(&mut self, p: [f64; 2], cur: &Cur, geo: &Geo) -> Option<Committed> {
         if let Some(d) = self.drag.take() {
-            if !d.moved { return None }
+            if !d.moved { if let Some((i, 3)) = d.node { return self.edit_path(&d.id, cur, |pp| turn(pp, i)) } return None }
             let key = d.before.timecode.clone(); let after = self.notes.iter().find(|n| n.timecode == key).cloned();
             self.push_step(Step { key: key.clone(), before: Some(d.before), after }); self.save();
             return Some(Committed { key, new_note: false })
@@ -314,12 +350,12 @@ impl Annotations {
     }
     /// Delete / Backspace with Select: the selected stroke goes.
     pub fn delete_selected(&mut self, cur: &Cur) -> Option<Committed> {
-        // a pen path with an anchor picked: that anchor goes (while more than two are left), the path stays selected
-        if let (Some(id), Some(i)) = (self.selected.clone(), self.sel_anchor) && self.strokes_at(cur).iter().find(|s| s.id == id).and_then(|s| s.path.as_ref()).is_some_and(|pp| pp.anchors.len() > 2 && i < pp.anchors.len()) {
-            self.sel_anchor = None; self.anchor_click = None;
-            return self.edit_path(&id, cur, |pp| { pp.anchors.remove(i); })
+        // the point tool with anchors picked: they go, while two are left to make a path (else the whole path goes)
+        if self.tool.is_path() && !self.sel_anchors.is_empty() && let Some(id) = self.selected.clone() && let Some(n) = self.strokes_at(cur).iter().find(|s| s.id == id).and_then(|s| s.path.as_ref()).map(|pp| pp.anchors.len()) {
+            let mut gone = std::mem::take(&mut self.sel_anchors); gone.retain(|i| *i < n); gone.sort_unstable(); gone.dedup();
+            if n - gone.len() >= 2 { return self.edit_path(&id, cur, |pp| { for i in gone.iter().rev() { pp.anchors.remove(*i); } }) }
         }
-        self.sel_anchor = None;
+        self.sel_anchors.clear();
         let id = self.selected.take()?;
         let before = self.note_at(cur)?.clone();
         let mut n = before.clone(); let mut ss = strokes::parse(n.annotation.as_ref()); ss.retain(|s| s.id != id); n.annotation = Some(strokes::to_data(&ss));
@@ -346,7 +382,7 @@ impl Annotations {
         if let Some(d) = self.dir() { let dir = io::images_dir(&d); let _ = std::fs::remove_file(dir.join(io::image_filename(key))); let _ = std::fs::remove_file(dir.join(io::annotated_filename(key))); }
     }
     /// QCView: Escape cancels the stroke in progress, else clears the selection. True when it did something.
-    pub fn escape(&mut self) -> bool { if self.live.take().is_some() { return true } self.sel_anchor = None; self.selected.take().is_some() }
+    pub fn escape(&mut self) -> bool { if self.live.take().is_some() { return true } self.sel_anchors.clear(); self.selected.take().is_some() }
     pub fn undo(&mut self) -> Option<Committed> { let s = self.undo.pop()?; let key = s.key.clone(); match &s.before { Some(n) => self.put(n.clone()), None => self.remove_note(&key) } self.redo.push(s); self.save(); self.selected = None; Some(Committed { key, new_note: false }) }
     pub fn redo(&mut self) -> Option<Committed> { let s = self.redo.pop()?; let key = s.key.clone(); match &s.after { Some(n) => self.put(n.clone()), None => self.remove_note(&key) } self.undo.push(s); self.save(); self.selected = None; Some(Committed { key, new_note: false }) }
 
@@ -391,17 +427,19 @@ impl Annotations {
         self.paint_ink(scene, cur, geo);
         // the selection: QCView's #0189f1 outline + corner handles, here on screen only
         if let Some(id) = &self.selected { if let Some(s) = self.strokes_at(cur).into_iter().find(|s| &s.id == id) {
+            // a path tool at work: the path's anchors and handles, not the box (the arrow's)
+            if let (true, Some(pp)) = (self.tool.is_path(), &s.path) { paint_nodes(scene, &pp.anchors, geo, &self.sel_anchors); return }
             let Some(bb) = self.sel_box(&s, geo) else { return };
             let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff);
             scene.stroke(&KStroke::new(1.5), Affine::IDENTITY, blue, None, &bb);
             for c in [bb.origin(), Point::new(bb.x1, bb.y0), Point::new(bb.x1, bb.y1), Point::new(bb.x0, bb.y1)] { scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, blue, None, &kurbo::Rect::from_center_size(c, (8.0, 8.0))); }
-            if let Some(pp) = &s.path { paint_nodes(scene, &pp.anchors, geo, self.sel_anchor); }
+
         } }
         // the pen at work (on screen only): the piece the next click would add, the anchors, the newest one's handles
         if let Some(Live::Pen(pl)) = &self.live {
             let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff);
             if let (false, Some(l)) = (pl.down, pl.anchors.last()) { let mut b = kurbo::BezPath::new(); b.move_to(geo.to_px(l.p)); b.curve_to(geo.to_px(l.hout), geo.to_px(pl.hover), geo.to_px(pl.hover)); scene.stroke(&KStroke::new(1.0), Affine::IDENTITY, blue, None, &b); }
-            paint_nodes(scene, &pl.anchors, geo, Some(pl.anchors.len() - 1));
+            paint_nodes(scene, &pl.anchors, geo, &[pl.anchors.len() - 1]);
         }
     }
     /// The ink alone — the frame's strokes and the live one — what an output carries (row 238).
@@ -426,8 +464,8 @@ impl Geo {
     fn to_px(&self, p: [f64; 2]) -> Point { Point::new(self.rect[0] + p[0] * self.rect[2], self.rect[1] + p[1] * self.rect[3]) }
 }
 /// A pen path's node under the pointer (screen space, 7 px): a handle that stands off its anchor first, then an anchor.
-fn node_at(path: &PenPath, geo: &Geo, pt: Point) -> Option<(usize, u8)> {
-    for (i, a) in path.anchors.iter().enumerate() { for (part, h) in [(1u8, a.hin), (2u8, a.hout)] { if h != a.p && geo.to_px(h).distance(pt) <= 7.0 { return Some((i, part)) } } }
+fn node_at(path: &PenPath, geo: &Geo, pt: Point, handles: bool) -> Option<(usize, u8)> {
+    if handles { for (i, a) in path.anchors.iter().enumerate() { for (part, h) in [(1u8, a.hin), (2u8, a.hout)] { if h != a.p && geo.to_px(h).distance(pt) <= 7.0 { return Some((i, part)) } } } }
     path.anchors.iter().position(|a| geo.to_px(a.p).distance(pt) <= 7.0).map(|i| (i, 0))
 }
 /// An anchor turned: a corner becomes smooth (handles a sixth of the way to its neighbours' chord each side), anything
@@ -441,7 +479,22 @@ fn turn(pp: &mut PenPath, i: usize) {
     pp.anchors[i] = Anchor { p: a.p, hin: [a.p[0] - v[0], a.p[1] - v[1]], hout: [a.p[0] + v[0], a.p[1] + v[1]] };
 }
 /// A pen path's anchors (squares; the picked one filled) and the handles that stand off them, on screen only.
-fn paint_nodes(scene: &mut Scene, anchors: &[Anchor], geo: &Geo, picked: Option<usize>) {
+/// The piece of a pen path under the pointer (within `reach` px): its first anchor's index and where along it (0..1).
+fn piece_at(path: &PenPath, geo: &Geo, pt: Point, reach: f64) -> Option<(usize, f64)> {
+    let a = &path.anchors; let n = a.len(); let pieces = if path.closed { n } else { n.saturating_sub(1) };
+    (0..pieces).map(|k| { let (x, y) = (a[k], a[(k + 1) % n]); let c = kurbo::CubicBez::new(geo.to_px(x.p), geo.to_px(x.hout), geo.to_px(y.hin), geo.to_px(y.p)); let near = c.nearest(pt, 0.05); (k, near.t, near.distance_sq) })
+        .filter(|(_, t, d)| *d <= reach * reach && *t > 0.02 && *t < 0.98).min_by(|x, y| x.2.total_cmp(&y.2)).map(|(k, t, _)| (k, t))
+}
+/// An anchor put on piece `k` at `t` (de Casteljau): the curve is the one it was.
+fn split(pp: &mut PenPath, k: usize, t: f64) {
+    let n = pp.anchors.len(); if n < 2 || k >= n { return } let j = (k + 1) % n;
+    let l = |a: [f64; 2], b: [f64; 2]| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    let (p0, p1, p2, p3) = (pp.anchors[k].p, pp.anchors[k].hout, pp.anchors[j].hin, pp.anchors[j].p);
+    let (a, q, b) = (l(p0, p1), l(p1, p2), l(p2, p3)); let (hin, hout) = (l(a, q), l(q, b));
+    pp.anchors[k].hout = a; pp.anchors[j].hin = b;
+    pp.anchors.insert(k + 1, Anchor { p: l(hin, hout), hin, hout });
+}
+fn paint_nodes(scene: &mut Scene, anchors: &[Anchor], geo: &Geo, picked: &[usize]) {
     let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff); let white = peniko::Color::from_rgba8(0xff, 0xff, 0xff, 0xff);
     for a in anchors { for h in [a.hin, a.hout] { if h != a.p {
         scene.stroke(&KStroke::new(1.0), Affine::IDENTITY, blue, None, &kurbo::Line::new(geo.to_px(a.p), geo.to_px(h)));
@@ -449,7 +502,7 @@ fn paint_nodes(scene: &mut Scene, anchors: &[Anchor], geo: &Geo, picked: Option<
     } } }
     for (i, a) in anchors.iter().enumerate() {
         let r = kurbo::Rect::from_center_size(geo.to_px(a.p), (7.0, 7.0));
-        scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, if picked == Some(i) { blue } else { white }, None, &r);
+        scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, if picked.contains(&i) { blue } else { white }, None, &r);
         scene.stroke(&KStroke::new(1.0), Affine::IDENTITY, blue, None, &r);
     }
 }
@@ -553,6 +606,20 @@ mod golden_tests {
 
 #[cfg(test)]
 mod scale_tests {
+    #[test]
+    fn a_point_put_on_a_piece_keeps_the_curve() {
+        use qcv_notes::strokes::{Anchor, PenPath};
+        let mut pp = PenPath { anchors: vec![Anchor { p: [0.1, 0.5], hin: [0.1, 0.5], hout: [0.2, 0.1] }, Anchor { p: [0.6, 0.5], hin: [0.5, 0.9], hout: [0.7, 0.2] }, Anchor::corner([0.9, 0.4])], closed: true };
+        let at = |pp: &PenPath, u: f64| { use kurbo::{ParamCurve, ParamCurveArclen}; let b = pp.bez(|p| kurbo::Point::new(p[0], p[1])); let segs: Vec<_> = b.segments().collect(); let total: f64 = segs.iter().map(|s| s.arclen(1e-9)).sum(); let mut want = u * total; for s in &segs { let l = s.arclen(1e-9); if want <= l { return s.eval(s.inv_arclen(want, 1e-9)) } want -= l; } segs.last().unwrap().eval(1.0) };
+        let before: Vec<kurbo::Point> = (0..=40).map(|i| at(&pp, i as f64 / 40.0)).collect();
+        super::split(&mut pp, 0, 0.3); super::split(&mut pp, 3, 0.6);   // one on the first piece, one on the closing piece
+        assert_eq!(pp.anchors.len(), 5);
+        for (i, b) in before.iter().enumerate() { let a = at(&pp, i as f64 / 40.0); assert!(a.distance(*b) < 1e-6, "the curve moved at {i}: {a:?} vs {b:?}"); }
+        // and a smooth point turned is a corner, a corner turned has handles
+        super::turn(&mut pp, 1); assert!(pp.anchors[1].hin == pp.anchors[1].p && pp.anchors[1].hout == pp.anchors[1].p);
+        super::turn(&mut pp, 1); assert!(pp.anchors[1].hin != pp.anchors[1].p && pp.anchors[1].hout != pp.anchors[1].p);
+    }
+
     use super::*;
     #[test] fn corner_scale_is_qcviews() {
         let sq = vec![[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]]; let b = [0.4, 0.4, 0.6, 0.6];

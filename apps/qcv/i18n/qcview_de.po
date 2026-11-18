@@ -4625,3 +4625,23 @@ msgstr "Der Export nach minNotes braucht einen Clip, der eine Datei ist"
 msgctxt "NotesPanel"
 msgid "Pen (click for corners, drag for curves; Enter to finish, the first point to close)"
 msgstr "Zeichenstift (Klick für Ecken, Ziehen für Kurven; Enter beendet, der erste Punkt schließt)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Select points (drag a point or a handle; Shift adds; Del removes)"
+msgstr "Punkte auswählen (Punkt oder Griff ziehen; Umschalt fügt hinzu; Entf entfernt)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Add a point (click the path)"
+msgstr "Punkt hinzufügen (auf den Pfad klicken)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Remove a point (click it)"
+msgstr "Punkt entfernen (anklicken)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Corner or curve (click a point; drag for new handles)"
+msgstr "Ecke oder Kurve (Punkt anklicken; ziehen für neue Griffe)"

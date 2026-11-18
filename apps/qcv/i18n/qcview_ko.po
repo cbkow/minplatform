@@ -4617,3 +4617,23 @@ msgstr "minNotes로 내보내려면 파일로 된 클립이 필요합니다"
 msgctxt "NotesPanel"
 msgid "Pen (click for corners, drag for curves; Enter to finish, the first point to close)"
 msgstr "펜 (클릭하면 모서리, 드래그하면 곡선. Enter로 마침, 첫 점을 누르면 닫힘)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Select points (drag a point or a handle; Shift adds; Del removes)"
+msgstr "점 선택 (점이나 핸들을 드래그; Shift로 추가; Del로 삭제)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Add a point (click the path)"
+msgstr "점 추가 (패스를 클릭)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Remove a point (click it)"
+msgstr "점 삭제 (클릭)"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Corner or curve (click a point; drag for new handles)"
+msgstr "모서리 또는 곡선 (점을 클릭; 드래그하면 새 핸들)"
