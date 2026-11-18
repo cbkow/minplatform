@@ -176,7 +176,9 @@ unsafe fn open_file(path: &str) -> Option<Opened> { unsafe {
 } }
 unsafe fn best_video_stream(ctx: *mut ff::AVFormatContext) -> i32 { unsafe { ff::av_find_best_stream(ctx, ff::AVMediaType::AVMEDIA_TYPE_VIDEO, -1, -1, std::ptr::null_mut(), 0) } }
 /// Display-matrix rotation → clockwise display degrees snapped to quarters (phones land near-quarter, −89.97 …).
-unsafe fn rotation_from_stream(stream: *mut ff::AVStream) -> i32 { unsafe {
+/// # Safety
+/// `stream` is a live stream of an open format context.
+pub unsafe fn rotation_from_stream(stream: *mut ff::AVStream) -> i32 { unsafe {
     let cp = (*stream).codecpar;
     let sd = ff::av_packet_side_data_get((*cp).coded_side_data, (*cp).nb_coded_side_data, ff::AVPacketSideDataType::AV_PKT_DATA_DISPLAYMATRIX);
     if sd.is_null() || (*sd).size < 9 * 4 { return 0 }

@@ -79,7 +79,8 @@ impl OcioChain {
 
 fn ocio_from_map(m: &Map<String, Value>) -> Option<OcioChain> {
     let view = s(m, "view"); if view.is_empty() { return None }
-    Some(OcioChain { config: s(m, "config"), input: s(m, "input"), look: s(m, "look"), view, scene_lut: s(&o(m, "sceneLut"), "path"), ccc_id: s(&o(m, "sceneLut"), "cccId"), knee: knee_from(&o(m, "knee"), Knee::default()) })
+    // a chain kept by 3.0.2 or QCView 2 names the config "Blender5.2": the bundled one is 5.3 now (measured the same picture on every chain the two share), and the old name opens it without a word
+    Some(OcioChain { config: { let c = s(m, "config"); if c == "Blender5.2" { "Blender5.3".into() } else { c } }, input: s(m, "input"), look: s(m, "look"), view, scene_lut: s(&o(m, "sceneLut"), "path"), ccc_id: s(&o(m, "sceneLut"), "cccId"), knee: knee_from(&o(m, "knee"), Knee::default()) })
 }
 
 impl Stored {
@@ -181,13 +182,17 @@ mod tests {
         let pin: Map<String, Value> = serde_json::from_str(r#"{"input":{"gamut":3,"transfer":14,"limited":false}}"#).unwrap();
         let Some(Stored { chain: ClipChain::MinColor(c), .. }) = Stored::from_clip_maps(&Map::new(), &pin, &fallback_default()) else { panic!() };
         assert_eq!((c.in_gamut, c.in_transfer, c.agx_on), (3, 14, 0));
-        let ocio = Stored { chain: ClipChain::Ocio(OcioChain { config: "Blender5.2".into(), input: "Rec.1886".into(), look: String::new(), view: "AgX".into(), scene_lut: String::new(), ccc_id: String::new(), knee: Knee::default() }), preset: "Mine".into() };
+        let ocio = Stored { chain: ClipChain::Ocio(OcioChain { config: "Blender5.3".into(), input: "Rec.1886".into(), look: String::new(), view: "AgX".into(), scene_lut: String::new(), ccc_id: String::new(), knee: Knee::default() }), preset: "Mine".into() };
         let (oc, mc) = ocio.to_clip_maps(&Map::new(), &pin);
         assert_eq!(mc, pin, "the minColor pins survive an OCIO chain");
-        assert_eq!(Stored::from_clip_maps(&oc, &mc, &fallback_default()), Some(ocio));
+        assert_eq!(Stored::from_clip_maps(&oc, &mc, &fallback_default()), Some(ocio.clone()));
         assert_eq!(Stored::from_clip_maps(&Map::new(), &Map::new(), &fallback_default()), None, "no maps = follows the default");
+        // a chain kept under the old bundled name opens as the new one
+        let mut old = ocio.clone(); if let ClipChain::Ocio(o) = &mut old.chain { o.config = "Blender5.2".into(); }
+        let (oc2, mc2) = old.to_clip_maps(&Map::new(), &pin);
+        assert_eq!(Stored::from_clip_maps(&oc2, &mc2, &fallback_default()), Some(ocio.clone()), "Blender5.2 opens Blender5.3");
         // the Scene LUT and its Correction ID ride in QCView's own keys (`sceneLut.path` / `sceneLut.cccId`)
-        let lut = Stored { chain: ClipChain::Ocio(OcioChain { config: "Blender5.2".into(), input: "Rec.1886".into(), look: String::new(), view: "Standard".into(), scene_lut: "/grades/shot.ccc".into(), ccc_id: "sh010".into(), knee: Knee::default() }), preset: String::new() };
+        let lut = Stored { chain: ClipChain::Ocio(OcioChain { config: "Blender5.3".into(), input: "Rec.1886".into(), look: String::new(), view: "Standard".into(), scene_lut: "/grades/shot.ccc".into(), ccc_id: "sh010".into(), knee: Knee::default() }), preset: String::new() };
         let m = lut.to_map();
         assert_eq!(m["sceneLut"], serde_json::json!({ "path": "/grades/shot.ccc", "cccId": "sh010" }));
         assert_eq!(Stored::from_map(&m), Some(lut));

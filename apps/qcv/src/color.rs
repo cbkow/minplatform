@@ -51,7 +51,7 @@ pub fn wanted_ahead(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<mpsc::
     wanted().map(|c| build_ahead(device, queue, c))
 }
 
-/// The bundled configs' folder (Blender5.2/ ACES_1.3/ ACES_2.0/).
+/// The bundled configs' folder (Blender5.3/ ACES_1.3/ ACES_2.0/).
 pub fn ocio_configs_dir() -> std::path::PathBuf {
     std::env::var_os("QCV_OCIO_CONFIGS").map(std::path::PathBuf::from).unwrap_or_else(|| {
         // the configs ship with the app (`apps/qcv/assets/OCIO`; they came over from QCView-Player 2026-11-09): beside the
@@ -71,9 +71,10 @@ pub fn knee_wanted() -> qcv_color::Knee {
 }
 
 /// The bundled configs (row 198): folder name, label.
-pub const BUNDLED: [(&str, &str); 3] = [("ACES_2.0", "ACES 2.0"), ("ACES_1.3", "ACES 1.3"), ("Blender5.2", "Blender 5.2")];
+pub const BUNDLED: [(&str, &str); 3] = [("ACES_2.0", "ACES 2.0"), ("ACES_1.3", "ACES 1.3"), ("Blender5.3", "Blender 5.3")];
 /// A config key → its file: a bundled folder name under the configs folder, else the path itself.
 pub fn ocio_config_path(key: &str) -> String {
+    let key = if key == "Blender5.2" { "Blender5.3" } else { key };   // the bundled config's name until 3.0.2
     if key.contains('/') || key.contains('\\') || key.ends_with(".ocio") { key.to_string() } else { ocio_configs_dir().join(key).join("config.ocio").to_string_lossy().into_owned() }
 }
 

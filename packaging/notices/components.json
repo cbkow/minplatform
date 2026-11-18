@@ -478,7 +478,7 @@
       ]
     },
     {
-      "name": "Blender 5.2 colour management (config, LUTs, ICC profiles)",
+      "name": "Blender 5.3 colour management (config, LUTs, ICC profiles)",
       "license": "GPL-3.0-or-later",
       "url": "https://projects.blender.org/blender/blender",
       "platforms": [
@@ -486,7 +486,7 @@
         "windows"
       ],
       "text": [],
-      "note": "Blender Foundation; shipped in assets/OCIO/Blender5.2 with QCView's EDR patch (assets/OCIO/patches). Under the same licence as QCView itself — see LICENSE.",
+      "note": "Blender Foundation; shipped in assets/OCIO/Blender5.3 with QCView's EDR patch (assets/OCIO/patches). Under the same licence as QCView itself — see LICENSE.",
       "files": [],
       "apps": [
         "qcv"

@@ -1,6 +1,6 @@
---- a/config.ocio  (stock Blender 5.2)
-+++ b/config.ocio  (QCView EDR patch)
-@@ -112,8 +112,22 @@
+--- a/config.ocio
++++ b/config.ocio
+@@ -116,8 +116,22 @@
      - !<View> {name: AgX - SDR, view_transform: AgX Base Display P3, display_colorspace: Rec.2100-HLG}
      - !<View> {name: False Color, view_transform: AgX False Color Rec.709, display_colorspace: Rec.2100-HLG}
      - !<View> {name: Raw, colorspace: Non-Color}
@@ -25,7 +25,7 @@
  inactive_colorspaces: [Luminance Compensation Rec.2020]
  
  display_colorspaces:
-@@ -211,6 +225,23 @@
+@@ -232,6 +246,23 @@
          - !<BuiltinTransform> {style: DISPLAY - CIE-XYZ-D65_to_REC.2100-PQ}
  
    - !<ColorSpace>
@@ -49,7 +49,7 @@
      name: Rec.2100-HLG
      aliases: [hlg_rec2020_display, rec2100_hlg_display, Rec.2100-HLG - Display]
      family: Display
-@@ -224,8 +255,44 @@
+@@ -245,8 +276,44 @@
      from_display_reference: !<GroupTransform>
        children:
          - !<BuiltinTransform> {style: DISPLAY - CIE-XYZ-D65_to_REC.2100-HLG-1000nit}
@@ -94,7 +94,7 @@
      name: Filmic sRGB
      family: View Inverse
      description: |
-@@ -515,7 +582,7 @@
+@@ -537,7 +604,7 @@
  
    - !<ColorSpace>
      name: Linear Rec.709
@@ -103,7 +103,7 @@
      family: Linear
      equalitygroup:
      bitdepth: 32f
-@@ -530,7 +597,7 @@
+@@ -552,7 +619,7 @@
  
    - !<ColorSpace>
      name: Linear DCI-P3 D65
@@ -112,7 +112,7 @@
      family: Linear
      equalitygroup:
      bitdepth: 32f
-@@ -545,7 +612,7 @@
+@@ -567,7 +634,7 @@
  
    - !<ColorSpace>
      name: Linear Rec.2020
@@ -121,7 +121,7 @@
      family: Linear
      equalitygroup:
      bitdepth: 32f
-@@ -559,6 +626,25 @@
+@@ -581,6 +648,25 @@
          - !<MatrixTransform> {matrix: [1.7166512, -0.3556708, -0.2533663, 0, -0.6666844, 1.6164812, 0.0157685, 0, 0.0176399, -0.0427706, 0.9421031, 0, 0, 0, 0, 1]}
  
    - !<ColorSpace>
@@ -147,7 +147,7 @@
      name: Linear Adobe RGB
      aliases: [lin_adobergb_scene, lin_adobergb, Linear AdobeRGB, Utility - Linear - Adobe RGB]
      family: Linear
-@@ -1119,7 +1205,7 @@
+@@ -1144,7 +1230,7 @@
  
    - !<ColorSpace>
      name: Gamma 2.2 Encoded Rec.709
@@ -156,7 +156,7 @@
      family: Utility
      equalitygroup:
      bitdepth: 32f
-@@ -1135,7 +1221,7 @@
+@@ -1160,7 +1246,7 @@
  
    - !<ColorSpace>
      name: Gamma 2.4 Encoded Rec.709
@@ -165,7 +165,7 @@
      family: Utility
      equalitygroup:
      bitdepth: 32f
-@@ -1143,7 +1229,7 @@
+@@ -1168,7 +1254,7 @@
        2.4 gamma-encoded Rec.709 with illuminant D65 white point.
        For use with scene-referred textures.
      isdata: false

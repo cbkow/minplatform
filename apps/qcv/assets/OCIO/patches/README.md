@@ -11,7 +11,7 @@ the next Blender config upgrade is mechanical:
 ```
 cp -R /Applications/Blender.app/Contents/Resources/<ver>/datafiles/colormanagement assets/OCIO/Blender<ver>
 cd assets/OCIO/Blender<ver>
-patch config.ocio < ../patches/blender52-edr.patch
+patch config.ocio < ../patches/blender53-edr.patch
 ```
 
 If the hunks drift on a future config, the invariants that must hold:
@@ -36,15 +36,15 @@ comment (`git grep "CONFIG UPGRADE"`).
 1. **Run the probe.** `build/tools/probe-ocio-metal/probe-ocio-metal
    assets/OCIO` — the `names` lines check every scope tag rule
    (`src/color/scope_names.h`) against the bundled configs; a `FAIL` on
-   Blender 5.2 must be fixed (add an alias in the config patch, or the new
+   Blender 5.3 must be fixed (add an alias in the config patch, or the new
    name to the list). `--` lines on other configs are informational: the
    scopes read that file kind through the built-in config instead. The
    rest of the probe (OCIO chain, knee, viewer aids, scopes on the GPU vs
-   the CPU) also runs against Blender 5.2 and ACES 2.0 by name.
+   the CPU) also runs against Blender 5.3 and ACES 2.0 by name.
 2. **Interchange roles.** The scopes and the knee split need
    `aces_interchange` (scene side) and `cie_xyz_d65_interchange` (display
    side) — `OcioChainBuilder::buildScopeTransform` / `buildSplit`.
-3. **Default and fallback config.** `Blender5.2` is the default
+3. **Default and fallback config.** `Blender5.3` is the default
    (`ocio_config_manager.cpp`, friendly-name table + promotion) and the
    scopes' fallback for files the live config can't name
    (`kScopeFallbackConfigDir` in `src/window/scope_controller.cpp`, shown

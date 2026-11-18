@@ -8,7 +8,7 @@ bundle's `Resources` on macOS); `QCV_OCIO_CONFIGS` points the app at another fol
 |---|---|---|
 | `ACES_2.0` | ACES 2.0 studio config, with QCView's display additions | ASWF `studio-config-all-views` v4.0.0 (see `patches/README.md`) |
 | `ACES_1.3` | ACES 1.3 config; its own `LICENSE` and `README` | the OpenColorIO project |
-| `Blender5.2` | Blender 5.2's stock colour management folder (config, LUTs, ICC profiles) with QCView's EDR patch | Blender 5.2 `datafiles/colormanagement` + `patches/blender52-edr.patch` |
+| `Blender5.3` | Blender 5.3's stock colour management folder (config, LUTs, ICC profiles) with QCView's EDR patch | Blender 5.3 `datafiles/colormanagement` + `patches/blender53-edr.patch` |
 
 `patches/` records what QCView changed on top of the stock configs, so the next upgrade is mechanical. The licences of
 these files are their upstreams'; the app's third-party notices list them.

@@ -1,12 +1,12 @@
 //! OCIO on the GPU against OCIO's own CPU processor, on the three bundled configs (row 198), through the one display.
-//! Configs: `QCV_OCIO_CONFIGS` (a folder holding Blender5.2/ ACES_1.3/ ACES_2.0/), else the app's own copy
+//! Configs: `QCV_OCIO_CONFIGS` (a folder holding Blender5.3/ ACES_1.3/ ACES_2.0/), else the app's own copy
 //! (`apps/qcv/assets/OCIO`, moved here from QCView-Player 2026-11-09). Skips when absent.
 use super::ocio::*;
 
 pub fn configs_dir() -> Option<std::path::PathBuf> {
     let p = std::env::var_os("QCV_OCIO_CONFIGS").map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/qcv/assets/OCIO"));
-    p.join("Blender5.2/config.ocio").exists().then_some(p)
+    p.join("Blender5.3/config.ocio").exists().then_some(p)
 }
 
 fn open(name: &str) -> Option<std::sync::Arc<Config>> {
@@ -24,7 +24,7 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
 
 #[test]
 fn the_one_display_carries_every_view_and_a_true_linear_encoding() {
-    let Some(b) = open("Blender5.2") else { eprintln!("no configs — skipped"); return };
+    let Some(b) = open("Blender5.3") else { eprintln!("no configs — skipped"); return };
     let v = b.views();
     for want in ["Standard", "AgX", "ACES 2.0 - HDR 1000 nits", "Raw"] { assert!(v.iter().any(|x| x == want), "Blender 5.2 views {v:?}"); }
     // Standard on linear Rec.709 = no change: the display colourspace's XYZ → Rec.709 matrix is the inverse of the config's
@@ -43,7 +43,7 @@ fn the_one_display_carries_every_view_and_a_true_linear_encoding() {
 #[test]
 fn native_shaders_match_the_cpu_processor() {
     let Some((dev, q)) = gpu() else { eprintln!("no GPU with passthrough — skipped"); return };
-    let Some(blender) = open("Blender5.2") else { eprintln!("no configs — skipped"); return };
+    let Some(blender) = open("Blender5.3") else { eprintln!("no configs — skipped"); return };
     let aces2 = open("ACES_2.0").unwrap();
     let aces13 = open("ACES_1.3").unwrap();
     let pick = |c: &Config, needle: &str| c.views().into_iter().find(|v| v.contains(needle)).unwrap_or_else(|| panic!("no view with {needle:?} in {:?}", c.views()));
@@ -83,7 +83,7 @@ fn native_shaders_match_the_cpu_processor() {
 #[test]
 fn the_knee_split_matches_the_cpu() {
     let Some((dev, q)) = gpu() else { eprintln!("no GPU with passthrough — skipped"); return };
-    let Some(blender) = open("Blender5.2") else { eprintln!("no configs — skipped"); return };
+    let Some(blender) = open("Blender5.3") else { eprintln!("no configs — skipped"); return };
     let aces2 = open("ACES_2.0").unwrap();
     let hdr_view = aces2.views().into_iter().find(|v| v.contains("HDR 1000 nits (P3 D65)")).unwrap();
     let cg = aces2.inputs().into_iter().find(|v| v.contains("ACEScg")).unwrap();
@@ -142,7 +142,7 @@ fn lut_files(tag: &str) -> (std::path::PathBuf, String, String) {
 
 #[test]
 fn a_scene_lut_and_a_correction_id_act_on_the_inputs_values() {
-    let Some(b) = open("Blender5.2") else { eprintln!("no configs — skipped"); return };
+    let Some(b) = open("Blender5.3") else { eprintln!("no configs — skipped"); return };
     let (dir, cube, ccc) = lut_files("cpu");
     let base = Spec { input: "Rec.1886".into(), view: "Standard".into(), ..Default::default() };
     let run = |spec: &Spec, px: &[f32]| { let mut v = px.to_vec(); Chain::build(&b, spec).unwrap_or_else(|e| panic!("{spec:?}: {e}")).apply_cpu(&mut v); v };
@@ -169,7 +169,7 @@ fn a_scene_lut_and_a_correction_id_act_on_the_inputs_values() {
 #[test]
 fn a_scene_lut_on_the_gpu_matches_the_cpu() {
     let Some((dev, q)) = gpu() else { eprintln!("no GPU with passthrough — skipped"); return };
-    let Some(blender) = open("Blender5.2") else { eprintln!("no configs — skipped"); return };
+    let Some(blender) = open("Blender5.3") else { eprintln!("no configs — skipped"); return };
     let (dir, cube, ccc) = lut_files("gpu");
     for spec in [Spec { input: "Rec.1886".into(), view: "Standard".into(), scene_lut: cube, ..Default::default() }, Spec { input: "Rec.1886".into(), view: "Standard".into(), scene_lut: ccc, ccc_id: "half".into(), ..Default::default() }] {
         let mut px: Vec<[f32; 3]> = (0..=32).map(|i| { let x = i as f32 / 32.0; [x, x, x] }).collect();
@@ -191,7 +191,7 @@ fn a_scene_lut_on_the_gpu_matches_the_cpu() {
 fn an_exported_cube_read_back_as_a_scene_lut_is_the_chain() {
     // Export LUT (canon row 257): the cube maps the Input's code values to the chain's SDR picture, sRGB-encoded. Read back by
     // OCIO as a Scene LUT in front of an identity view (Standard on linear Rec.709), it must give what the chain gives.
-    let Some(b) = open("Blender5.2") else { eprintln!("no configs — skipped"); return };
+    let Some(b) = open("Blender5.3") else { eprintln!("no configs — skipped"); return };
     let dir = std::env::temp_dir().join(format!("qcv-ocio-bake-{}", std::process::id())); std::fs::create_dir_all(&dir).unwrap();
     let srgb = |v: f32| if v <= 0.0031308 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
     for (case, (spec, knee)) in [
