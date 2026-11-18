@@ -20,12 +20,14 @@ pub enum Tool {
     /// the second set (rows 301, 316): shown while a video block is the current one - QCView's seven tools for drawing
     /// on the frame, the pen's colour and width, and the frame's note (add, its words, addressed, delete)
     DrawSelect, DrawPen, /// the pen's path (row 567): anchors and handles
-    DrawPath, DrawRect, DrawOval, DrawArrow, DrawLine, DrawErase, PenColor, PenThinner, PenThicker, NoteText, NoteDone, NoteDelete,
+    DrawPath, /// the path tools (row 573): points picked, added, removed, turned
+    PtSelect, PtAdd, PtRemove, PtConvert, DrawRect, DrawOval, DrawArrow, DrawLine, DrawErase, PenColor, PenThinner, PenThicker, NoteText, NoteDone, NoteDelete,
 }
 /// What the band shows of the current video block's notes (None: no video block is current - the text's tools show).
 #[derive(Clone, Copy, PartialEq)]
 pub struct VideoShown { pub tool: Option<Tool>, pub pen: peniko::Color, /// the video stands on a note's frame; that note is addressed
-    pub on_note: bool, pub addressed: bool }
+    pub on_note: bool, pub addressed: bool, /// the path tools have something to work on (the pen or one of them is armed, or a pen path is selected)
+    pub path: bool }
 impl Tool {
     /// Built: the button does something today.
     fn built(self) -> bool { true }
@@ -37,7 +39,8 @@ impl Tool {
             // the bundled set has no bold glyph: the button carries the letter
             Tool::Bold => ("", Some("B"), "Bold", "B"), Tool::Italic => ("text-italic", None, "Italic", "I"), Tool::Underline => ("text-underline", None, "Underline", "U"), Tool::Strike => ("text-strikethrough", None, "Strikethrough", "Shift+X"),
             Tool::Code => ("code", None, "Inline code", "E"), Tool::Highlight => ("", None, "Background colour \u{2014} the key applies the last one", "Shift+H"), Tool::Color => ("", None, "Type colour", ""), Tool::Link => ("link", None, "Link", "K"), Tool::ClearFormat => ("text-t-slash", None, "Clear formatting", "\\"),
-            Tool::DrawSelect => ("cursor", None, "Select a drawing (drag to move, its corners to scale, Delete to remove; again to stop)", ""), Tool::DrawPen => ("pencil-simple", None, "Draw on the frame (again to stop)", ""), Tool::DrawPath => ("pen-nib", None, "Pen: click for corners, drag for curves (Enter ends the path, its first point closes it)", ""), Tool::DrawRect => ("rectangle", None, "Rectangle", ""), Tool::DrawOval => ("circle", None, "Oval", ""),
+            Tool::DrawSelect => ("cursor", None, "Select a drawing (drag to move, its corners to scale, Delete to remove; again to stop)", ""), Tool::DrawPen => ("pencil-simple", None, "Draw on the frame (again to stop)", ""), Tool::PtSelect => ("navigation-arrow", None, "Select points of a path (drag a point or a handle; Shift adds; Delete removes)", ""), Tool::PtAdd => ("plus-circle", None, "Add a point (click the path)", ""), Tool::PtRemove => ("minus-circle", None, "Remove a point (click it)", ""), Tool::PtConvert => ("bezier-curve", None, "Corner or curve (click a point; drag for new handles)", ""),
+            Tool::DrawPath => ("pen-nib", None, "Pen: click for corners, drag for curves (Enter ends the path, its first point closes it)", ""), Tool::DrawRect => ("rectangle", None, "Rectangle", ""), Tool::DrawOval => ("circle", None, "Oval", ""),
             Tool::DrawArrow => ("arrow-up-right", None, "Arrow", ""), Tool::DrawLine => ("line-segment", None, "Line", ""), Tool::DrawErase => ("eraser", None, "Erase a drawing", ""),
             Tool::PenColor => ("", None, "The colour of what is drawn", ""), Tool::PenThinner => ("minus", None, "Thinner line", ""), Tool::PenThicker => ("plus", None, "Thicker line", ""),
             Tool::NoteText => ("chat-text", None, "Write a note on this frame", ""), Tool::NoteDone => ("check-circle", None, "Mark the note addressed", ""), Tool::NoteDelete => ("trash", None, "Delete the note", ""),
@@ -83,7 +86,7 @@ impl Toolbar {
         // a video's set, as one reads it (the user 2026-11-12): what goes ON the frame together - the drawing tools and the
         // note's words, as the last of them; then how a line looks - its colour as a swatch (not a pen: it is no tool) and
         // its width; and, apart at the right end, what is done WITH the note - addressed, delete
-        let video: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawPath, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase, NoteText], vec![PenColor, PenThinner, PenThicker], vec![NoteDone, NoteDelete]];
+        let video: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawPath, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase, NoteText], vec![PtSelect, PtAdd, PtRemove, PtConvert], vec![PenColor, PenThinner, PenThicker], vec![NoteDone, NoteDelete]];
         // a canvas's set (row 324): the pointer and the drawing tools with the Qt app's keys, how a line looks, what is put on the sheet
         let canvas: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase], vec![PenColor, PenThinner, PenThicker], vec![Frame, Image, File]];
         let mut cgroups = make(&canvas);
@@ -95,7 +98,7 @@ impl Toolbar {
         let mut pgroups = make(&page);
         for (b, tip) in pgroups[0].buttons.iter_mut().zip(["Pick a stroke (V) \u{2014} drag to move it, Delete to remove it; again to stop", "Pen (P) \u{2014} draws on the picture or the page; again to stop", "Line (L)", "Arrow (A)", "Rectangle (R)", "Oval (O)", "Eraser (E) \u{2014} rubs out what it passes over"]) { b.tooltip = tip.to_string(); }
         for (b, tip) in pgroups[1].buttons.iter_mut().zip(["Pen colour \u{2014} or the picked stroke's", "Thinner line", "Thicker line"]) { b.tooltip = tip.to_string(); }
-        Toolbar { sets: [Default::default(), (make(&video), video.clone(), 2), (cgroups, canvas.clone(), 3), (pgroups, page.clone(), 2)], cur: 0, video: None, ink: None, groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, reading: false, scale: 1.0, chips: [None, None] }
+        Toolbar { sets: [Default::default(), (make(&video), video.clone(), 3), (cgroups, canvas.clone(), 3), (pgroups, page.clone(), 2)], cur: 0, video: None, ink: None, groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, reading: false, scale: 1.0, chips: [None, None] }
     }
     /// Places the band from `x0` to `x1` at `y`; returns its height (0 when hidden). The groups flow left to right and
     /// wrap; when they all fit on one row the last groups move to the right end.
@@ -127,7 +130,7 @@ impl Toolbar {
         self.video = s.video; self.ink = s.ink;
         if let (Some(v), 2 | 3) = (s.ink, which) { for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (b, tool) in g.buttons.iter_mut().zip(set) { b.enabled = true; b.selected = Some(*tool) == v.tool; } } return swapped }
         if let Some(v) = s.video { for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (b, tool) in g.buttons.iter_mut().zip(set) {
-            b.enabled = match tool { Tool::NoteDone | Tool::NoteDelete => v.on_note, _ => true };
+            b.enabled = match tool { Tool::NoteDone | Tool::NoteDelete => v.on_note, Tool::PtSelect | Tool::PtAdd | Tool::PtRemove | Tool::PtConvert => v.path, _ => true };
             b.selected = Some(*tool) == v.tool || (*tool == Tool::NoteDone && v.on_note && v.addressed); } }
             return swapped }
         self.chips = [s.state.color.as_deref().and_then(mn_layout::colour), s.state.highlight.as_deref().and_then(mn_layout::colour)];
