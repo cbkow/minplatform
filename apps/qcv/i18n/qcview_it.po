@@ -4605,3 +4605,8 @@ msgstr "Quella sorgente live è già sull'altro lato"
 msgctxt "LeftRail"
 msgid "Hardware scrub for h264/h265"
 msgstr "Scrub hardware per h264/h265"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "LeftRail"
+msgid "GPU decode (Vulkan/D3D12VA) when available. Turn off if playback misbehaves — forces software decode everywhere. Applies on next file load."
+msgstr "Decodifica su GPU (Vulkan/D3D12VA) quando disponibile. Disattivala se la riproduzione dà problemi — forza la decodifica software ovunque. Si applica al prossimo caricamento di un file."

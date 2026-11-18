@@ -16,6 +16,8 @@ fn oetf(c: vec3<f32>) -> vec3<f32> { let x = clamp(c, vec3(0.0), vec3(1.0)); ret
 fn eotf(c: vec3<f32>) -> vec3<f32> { let x = clamp(c, vec3(0.0), vec3(1.0)); return select(pow((x + 0.055) / 1.055, vec3(2.4)), x / 12.92, x <= vec3(0.04045)); }
 @fragment fn fs(v: V) -> @location(0) vec4<f32> {
   let a = textureSample(ta, smp, v.uv); let b = textureSample(tb, smp, v.uv);
+  // outside both pictures the viewport's background stays (QCView); this pass painted its whole rect black before
+  if (max(a.a, b.a) <= 0.0) { discard; }
   let e = abs(oetf(a.rgb) - oetf(b.rgb)) * d.p.x;
   return vec4(eotf(e) * select(1.0, d.p.y, d.p.y > 0.0), 1.0);
 }

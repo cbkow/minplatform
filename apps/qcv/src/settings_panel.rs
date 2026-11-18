@@ -58,7 +58,7 @@ impl SettingsPanel {
         let pick = |key, label, help, backed, opts: &'static [&'static str], values: &'static [&'static str]| Row { key, label: tr(label), help: tr(help), backed, windows_only: false, ctl: Ctl::Picker(Picker::new(opts.iter().map(|s| if LANG_NAMES[1..].contains(s) || ["PNG", "PNG 16-bit", "JPEG", "TIFF 16-bit"].contains(s) { s.to_string() } else { tr(s).to_string() }).collect(), 0), values), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
         let mut threads = num(k::FFMPEG_THREADS, "Video decode threads", "0 = Auto. Single-video playback only; applies on the next open.", true, 0, 32, 1);
         if let Ctl::Number(n) = &mut threads.ctl { let z = std::mem::replace(n, NumberField::new(0, 0, 32, 1)); *n = z.zero_label(tr("Auto")); }
-        let mut hw = sw(k::HW_DECODE, "Enable hardware decoding", "GPU decode (D3D12VA) when the format allows; applies on the next open.", true);
+        let mut hw = sw(k::HW_DECODE, "Enable hardware decoding", "GPU decode (Vulkan/D3D12VA) when available. Turn off if playback misbehaves — forces software decode everywhere. Applies on next file load.", true);
         hw.windows_only = true;   // QCView: `visible: Qt.platform.os === "windows"` (VideoToolbox is always on where it applies)
         #[cfg(target_os = "macos")] let updater = crate::sparkle::bundled();
         #[cfg(not(target_os = "macos"))] let updater = false;

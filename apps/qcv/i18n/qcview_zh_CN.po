@@ -4597,3 +4597,8 @@ msgstr "该实时源已在另一侧"
 msgctxt "LeftRail"
 msgid "Hardware scrub for h264/h265"
 msgstr "h264/h265 硬件搓擦"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "LeftRail"
+msgid "GPU decode (Vulkan/D3D12VA) when available. Turn off if playback misbehaves — forces software decode everywhere. Applies on next file load."
+msgstr "可用时使用 GPU 解码 (Vulkan/D3D12VA)。播放异常时请关闭——将全部强制为软件解码。下次加载文件时生效。"

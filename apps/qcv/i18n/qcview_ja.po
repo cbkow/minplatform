@@ -4597,3 +4597,8 @@ msgstr "そのライブソースはすでに反対側にあります"
 msgctxt "LeftRail"
 msgid "Hardware scrub for h264/h265"
 msgstr "h264/h265のハードウェアスクラブ"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "LeftRail"
+msgid "GPU decode (Vulkan/D3D12VA) when available. Turn off if playback misbehaves — forces software decode everywhere. Applies on next file load."
+msgstr "利用可能な場合はGPUデコード (Vulkan/D3D12VA) を使用します。再生に問題があればオフにしてください — すべてソフトウェアデコードになります。次回のファイル読み込みから適用されます。"
