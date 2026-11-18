@@ -14,7 +14,8 @@ fn tr(s: &str) -> &str { min_i18n::trc("NotesPanel", s) }
 
 /// The drawer's height (logical px): resizable from its top edge within its own range (taller = more lines of note text; the
 /// colour drawer keeps 200–600). QCView's band was a fixed 270.
-pub const HEIGHT_DEFAULT: f64 = 340.0; pub const HEIGHT_MIN: f64 = 320.0; pub const HEIGHT_MAX: f64 = 720.0;
+pub const HEIGHT_DEFAULT: f64 = 320.0;   // (340 until the tools were 28 px: the least height holds them with no gap under the eraser - the user 2026-11-18)
+ pub const HEIGHT_MIN: f64 = 320.0; pub const HEIGHT_MAX: f64 = 720.0;
 const CARD_W: f64 = 240.0; const THUMB_H: f64 = 135.0; const ADD_W: f64 = 120.0; const PICK_W: f64 = 240.0;
 /// the tools: Spectrum 2's M action buttons (32) in one column, rounded like the panels (the walk)
 const TOOL_B: f64 = 28.0;   // (32 until the pen made eight: 8 × 32 + 7 × 4 + the insets = 300 stood in a body of 292 at the default height, 272 at the least; 28 gives 268)
