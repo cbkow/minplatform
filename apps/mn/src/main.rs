@@ -1852,7 +1852,7 @@ impl App {
             T::Table => { let d = self.ed.insert_table(3, 3, now).unwrap_or(Dirty::Nothing); self.apply(d); }
             T::Columns => { let d = self.ed.insert_columns(now).unwrap_or(Dirty::Nothing); self.apply(d); }
             // a video block's set (rows 301, 316): the drawing tools arm and put down; the pen; the frame's note
-            T::DrawSelect => self.arm(qcv_annotate::Tool::Select), T::DrawPen => self.arm(qcv_annotate::Tool::Freehand), T::DrawRect => self.arm(qcv_annotate::Tool::Rectangle), T::DrawOval => self.arm(qcv_annotate::Tool::Oval),
+            T::DrawSelect => self.arm(qcv_annotate::Tool::Select), T::DrawPen => self.arm(qcv_annotate::Tool::Freehand), T::DrawPath => self.arm(qcv_annotate::Tool::Pen), T::DrawRect => self.arm(qcv_annotate::Tool::Rectangle), T::DrawOval => self.arm(qcv_annotate::Tool::Oval),
             T::DrawArrow => self.arm(qcv_annotate::Tool::Arrow), T::DrawLine => self.arm(qcv_annotate::Tool::Line), T::DrawErase => self.arm(qcv_annotate::Tool::Eraser),
             T::PenThinner | T::PenThicker => { let steps = [1.0f32, 2.0, 3.0, 4.0, 6.0, 9.0, 14.0, 22.0, 32.0, 48.0, 64.0]; let w = self.files.pen_w.unwrap_or(6.0); let i = steps.iter().position(|x| *x >= w).unwrap_or(4);
                 let j = if tool == T::PenThinner { i.saturating_sub(1) } else { (i + 1).min(steps.len() - 1) }; self.files.pen_w = Some(steps[j]); if let Some(p) = self.player.as_mut() { p.ann.width = steps[j]; }
@@ -1975,6 +1975,8 @@ impl App {
     }
     /// A drawing tool is armed (the same again: put down). A click on a video's picture then draws instead of playing.
     fn arm(&mut self, tool: qcv_annotate::Tool) {
+        // a path the pen has under way ends as it stands before the tool changes
+        if let Some((_, cur)) = self.video_geo() { let c = self.player.as_mut().and_then(|p| p.ann.pen_finish(&cur)); if let Some(c) = c { self.annotated(c); } }
         self.files.tool = if self.files.tool == Some(tool) { None } else { Some(tool) };
         if let Some(p) = self.player.as_mut() { p.ann.active = self.files.tool.is_some(); if let Some(t) = self.files.tool { p.ann.tool = t; } p.ann.escape(); }
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
@@ -2109,6 +2111,8 @@ impl App {
             let z = matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("z"));
             if cmd && z { let c = self.player.as_mut().and_then(|p| if shift { p.ann.redo() } else { p.ann.undo() }); if let Some(c) = c { self.annotated(c); } return true }
             if !cmd && matches!(&event.logical_key, Key::Named(NamedKey::Backspace | NamedKey::Delete)) && self.files.tool == Some(qcv_annotate::Tool::Select) { if let Some((_, cur)) = self.video_geo() { let c = self.player.as_mut().and_then(|p| p.ann.delete_selected(&cur)); if let Some(c) = c { self.annotated(c); return true } } }
+            // the pen's path ends as it stands on Enter or Escape
+            if !cmd && matches!(&event.logical_key, Key::Named(NamedKey::Escape | NamedKey::Enter)) && self.player.as_ref().is_some_and(|p| p.ann.pen_live()) { if let Some((_, cur)) = self.video_geo() { let c = self.player.as_mut().and_then(|p| p.ann.pen_finish(&cur)); if let Some(c) = c { self.annotated(c); } } if let Some(p) = self.player.as_mut() { p.ann.escape(); } self.files.drawing = false; if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
             if !cmd && matches!(&event.logical_key, Key::Named(NamedKey::Escape)) && self.player.as_mut().is_some_and(|p| p.ann.escape()) { self.files.drawing = false; if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         }
         if cmd { return false }
@@ -3586,7 +3590,7 @@ impl ApplicationHandler for App {
           let shown = self.video_current().filter(|_| self.files.canvas.is_none() || self.files.card.is_some()).map(|id| { let d = self.video_boxes(id).map(|b| b.3).unwrap_or_default(); let rec: serde_json::Value = serde_json::from_str(&d).unwrap_or_default();
               let at = self.player.as_ref().filter(|p| p.id == id).map(|p| p.t.current_frame() as i64).unwrap_or(rec.get("frame").and_then(|f| f.as_i64()).unwrap_or(0));
               let notes = self.media.notes(&d); let note = notes.iter().find(|n| n.frame == at); let c = self.files.pen.unwrap_or([1.0, 0.0, 0.0, 1.0]);
-              toolbar::VideoShown { tool: self.files.tool.map(|t| match t { A::Select => T::DrawSelect, A::Freehand => T::DrawPen, A::Rectangle => T::DrawRect, A::Oval => T::DrawOval, A::Arrow => T::DrawArrow, A::Line => T::DrawLine, A::Eraser => T::DrawErase }), pen: peniko::Color::new(c), on_note: note.is_some(), addressed: note.is_some_and(|n| n.addressed) } });
+              toolbar::VideoShown { tool: self.files.tool.map(|t| match t { A::Select => T::DrawSelect, A::Freehand => T::DrawPen, A::Pen => T::DrawPath, A::Rectangle => T::DrawRect, A::Oval => T::DrawOval, A::Arrow => T::DrawArrow, A::Line => T::DrawLine, A::Eraser => T::DrawErase }), pen: peniko::Color::new(c), on_note: note.is_some(), addressed: note.is_some_and(|n| n.addressed) } });
           if shown != self.files.vshown { self.files.vshown = shown; if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
         { use ink::{Ink as I, Pick as P}; use toolbar::Tool as T; self.files.iblock = self.ink_block();
           let shown = self.files.iblock.as_ref().filter(|_| self.files.vshown.is_none()).map(|_| toolbar::InkShown { page: true, pen: peniko::Color::new(self.files.pen.unwrap_or([1.0, 0.0, 0.0, 1.0])),
@@ -3712,8 +3716,10 @@ impl ApplicationHandler for App {
                     let paths: Vec<std::path::PathBuf> = uris.iter().filter_map(|u| if u.starts_with("file:") { min_paths::url::file_url_to_path(u) } else if u.contains("://") { None } else { Some(u.to_string()) }).map(Into::into).collect();
                     self.add_files(paths, at); } }
             }
-            WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); }
+            WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); if let Some(p) = self.player.as_mut() { p.ann.alt = st.alt_key(); } }
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
+                // the pen between two clicks: the piece the next click would add follows the pointer
+                if !self.files.drawing && self.player.as_ref().is_some_and(|p| p.ann.pen_live()) { if let Some((geo, cur)) = self.video_geo() { if let Some(p) = self.player.as_mut() { p.ann.motion(geo.to_norm(position.x, position.y), &cur, &geo, false); } } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
                 if self.files.resize.is_some() { self.resize_to(position.x); return }
                 // a card of a board being dragged (row 365): where it would land follows the pointer
                 if let Some((table, _, from, moved, _)) = self.files.board_drag { let now_moved = moved || (from.0 - position.x).abs() > 5.0 || (from.1 - position.y).abs() > 5.0;

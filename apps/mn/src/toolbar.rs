@@ -19,7 +19,8 @@ pub enum Tool {
     Frame,
     /// the second set (rows 301, 316): shown while a video block is the current one - QCView's seven tools for drawing
     /// on the frame, the pen's colour and width, and the frame's note (add, its words, addressed, delete)
-    DrawSelect, DrawPen, DrawRect, DrawOval, DrawArrow, DrawLine, DrawErase, PenColor, PenThinner, PenThicker, NoteText, NoteDone, NoteDelete,
+    DrawSelect, DrawPen, /// the pen's path (row 567): anchors and handles
+    DrawPath, DrawRect, DrawOval, DrawArrow, DrawLine, DrawErase, PenColor, PenThinner, PenThicker, NoteText, NoteDone, NoteDelete,
 }
 /// What the band shows of the current video block's notes (None: no video block is current - the text's tools show).
 #[derive(Clone, Copy, PartialEq)]
@@ -36,7 +37,7 @@ impl Tool {
             // the bundled set has no bold glyph: the button carries the letter
             Tool::Bold => ("", Some("B"), "Bold", "B"), Tool::Italic => ("text-italic", None, "Italic", "I"), Tool::Underline => ("text-underline", None, "Underline", "U"), Tool::Strike => ("text-strikethrough", None, "Strikethrough", "Shift+X"),
             Tool::Code => ("code", None, "Inline code", "E"), Tool::Highlight => ("", None, "Background colour \u{2014} the key applies the last one", "Shift+H"), Tool::Color => ("", None, "Type colour", ""), Tool::Link => ("link", None, "Link", "K"), Tool::ClearFormat => ("text-t-slash", None, "Clear formatting", "\\"),
-            Tool::DrawSelect => ("cursor", None, "Select a drawing (drag to move, its corners to scale, Delete to remove; again to stop)", ""), Tool::DrawPen => ("pencil-simple", None, "Draw on the frame (again to stop)", ""), Tool::DrawRect => ("rectangle", None, "Rectangle", ""), Tool::DrawOval => ("circle", None, "Oval", ""),
+            Tool::DrawSelect => ("cursor", None, "Select a drawing (drag to move, its corners to scale, Delete to remove; again to stop)", ""), Tool::DrawPen => ("pencil-simple", None, "Draw on the frame (again to stop)", ""), Tool::DrawPath => ("pen-nib", None, "Pen: click for corners, drag for curves (Enter ends the path, its first point closes it)", ""), Tool::DrawRect => ("rectangle", None, "Rectangle", ""), Tool::DrawOval => ("circle", None, "Oval", ""),
             Tool::DrawArrow => ("arrow-up-right", None, "Arrow", ""), Tool::DrawLine => ("line-segment", None, "Line", ""), Tool::DrawErase => ("eraser", None, "Erase a drawing", ""),
             Tool::PenColor => ("", None, "The colour of what is drawn", ""), Tool::PenThinner => ("minus", None, "Thinner line", ""), Tool::PenThicker => ("plus", None, "Thicker line", ""),
             Tool::NoteText => ("chat-text", None, "Write a note on this frame", ""), Tool::NoteDone => ("check-circle", None, "Mark the note addressed", ""), Tool::NoteDelete => ("trash", None, "Delete the note", ""),
@@ -82,7 +83,7 @@ impl Toolbar {
         // a video's set, as one reads it (the user 2026-11-12): what goes ON the frame together - the drawing tools and the
         // note's words, as the last of them; then how a line looks - its colour as a swatch (not a pen: it is no tool) and
         // its width; and, apart at the right end, what is done WITH the note - addressed, delete
-        let video: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase, NoteText], vec![PenColor, PenThinner, PenThicker], vec![NoteDone, NoteDelete]];
+        let video: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawPath, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase, NoteText], vec![PenColor, PenThinner, PenThicker], vec![NoteDone, NoteDelete]];
         // a canvas's set (row 324): the pointer and the drawing tools with the Qt app's keys, how a line looks, what is put on the sheet
         let canvas: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase], vec![PenColor, PenThinner, PenThicker], vec![Frame, Image, File]];
         let mut cgroups = make(&canvas);

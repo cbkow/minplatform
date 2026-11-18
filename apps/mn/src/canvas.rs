@@ -256,7 +256,7 @@ impl Canvas {
     /// For scripted checks (`MN_CANVAS=5`): one of each kind of stroke - a pen's line swelling with its pressure among them - and
     /// `more` pen lines scattered over the sheet (`MN_INK=<n>`: how the canvas draws with thousands of them).
     pub fn ink_demo(&mut self, more: usize) {
-        let pen = (self.pen, self.pen_w); let put = |me: &mut Canvas, tool: Kind, color: [f32; 4], width: f64, points: Vec<[f64; 2]>, pressures: Option<Vec<f64>>| { me.ink_put(ink::Line { s: Shape { id: strokes::new_id(), tool, color: Shape::qcolor(color), width, filled: false, is_modeled: tool == Kind::Freehand, points }, pressures }); };
+        let pen = (self.pen, self.pen_w); let put = |me: &mut Canvas, tool: Kind, color: [f32; 4], width: f64, points: Vec<[f64; 2]>, pressures: Option<Vec<f64>>| { me.ink_put(ink::Line { s: Shape { id: strokes::new_id(), tool, color: Shape::qcolor(color), width, filled: false, is_modeled: tool == Kind::Freehand, points, path: None }, pressures }); };
         let wave: Vec<[f64; 2]> = (0..=200).map(|i| { let x = i as f64 * 3.0; [x, 60.0 * (x / 70.0).sin()] }).collect(); let swell: Vec<f64> = (0..=200).map(|i| (i as f64 / 200.0 * std::f64::consts::PI).sin()).collect();
         put(self, Kind::Freehand, [0.92, 0.92, 0.92, 1.0], 14.0, wave.clone(), Some(swell)); put(self, Kind::Freehand, [0.9, 0.2, 0.2, 1.0], 6.0, wave.iter().map(|p| [p[0], p[1] + 120.0]).collect(), None);
         put(self, Kind::Line, [0.2, 0.5, 0.9, 1.0], 4.0, vec![[0.0, 260.0], [260.0, 330.0]], None); put(self, Kind::Arrow, [0.2, 0.7, 0.3, 1.0], 6.0, vec![[320.0, 330.0], [600.0, 250.0]], None);
@@ -274,7 +274,7 @@ impl Canvas {
         let a = put(self, "link", "https://example.org/one", 0.0, 0.0, 300.0, 52.0); let b = put(self, "link", "https://example.org/two", 60.0, 110.0, 300.0, 52.0); self.sel = vec![a, b]; self.group(); self.frame_tint("teal");
         let l = put(self, "link", "https://example.org/locked", 0.0, 320.0, 300.0, 52.0); self.sel = vec![l]; self.lock(true);
         let f = put(self, "frame", r#"{"title":"Board 16 : 9","fixed":true,"aspect":1.7777}"#, 480.0, 0.0, 480.0, 270.0);
-        self.ink_put(ink::Line { s: Shape { id: strokes::new_id(), tool: Kind::Line, color: Shape::qcolor([1.0, 0.4, 0.2, 1.0]), width: 10.0, filled: false, is_modeled: false, points: vec![[560.0, 120.0], [1100.0, 200.0]] }, pressures: None });
+        self.ink_put(ink::Line { s: Shape { id: strokes::new_id(), tool: Kind::Line, color: Shape::qcolor([1.0, 0.4, 0.2, 1.0]), width: 10.0, filled: false, is_modeled: false, points: vec![[560.0, 120.0], [1100.0, 200.0]], path: None }, pressures: None });
         if let Some(e) = self.els.last_mut() { e.parent = Some(f); } self.sel = vec![l]; self.undo.clear();
     }
     #[cfg(test)] fn inks(&self) -> Vec<ink::Line> { self.els.iter().filter_map(ink::read).collect() }
