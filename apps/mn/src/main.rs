@@ -545,12 +545,6 @@ impl App {
             // (a block whose clip has notes: in the words' bar under the strip, row 577; else over the picture's foot)
             let band = if l.is_noted(*id) { Rect::new(r.x0, y1 + mn_layout::VIDEO_STRIP as f64 * s, r.x1, y1 + (mn_layout::VIDEO_STRIP + mn_layout::VIDEO_CAPTION) as f64 * s) } else { Rect::new(r.x0, y1 - 26.0 * s, r.x1, y1) }; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &band);
             f.layout(&mut g.fonts, band.inset(-2.0 * s), s); f.paint(scene, &mut g.fonts, s); } }
-        // a path tool on a page: the selected pen path's anchors and handles, the box being dragged
-        if let Some((frame, pw, l)) = self.files.pshow.as_ref() { self.files.pedit.paint(scene, l, kurbo::Affine::translate((frame.x0, frame.y0)) * kurbo::Affine::scale(frame.width() / pw.max(1e-9))); }
-        else if let (Some((a, b)), Some((_, frame, _, _, size, ..))) = (self.files.pedit.marquee, self.files.pctx.as_ref()) { let at = kurbo::Affine::translate((frame.x0, frame.y0)) * kurbo::Affine::scale(frame.width() / size.0.max(1e-9)); let r = Rect::from_points(at * a, at * b); let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff);
-            scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, blue.multiply_alpha(0.19), None, &r); scene.stroke(&kurbo::Stroke::new(1.0), kurbo::Affine::IDENTITY, blue, None, &r); }
-        // the pen's path under way on a page: its anchors, its handles, the piece the next click would add
-        if let (Some(pl), Some((_, frame, _, _, size))) = (self.files.path_live.as_ref(), self.files.path_host.as_ref()) { pl.paint(scene, kurbo::Affine::translate((frame.x0, frame.y0)) * kurbo::Affine::scale(frame.width() / size.0.max(1e-9))); }
         // the whole of a note's words while the pointer is over their bar, when two lines did not hold them (row 577)
         if let Some((bar, words, key, done)) = self.files.cap_over.clone() {
             let (size, ink) = ((12.0 * s) as f32, paint::text()); let wide = (bar.width() - 20.0 * s).max(40.0);
@@ -643,6 +637,14 @@ impl App {
                 match self.media.view(&d, pw.max(64.0), ph.max(64.0)) { media::View::Ready { brush, .. } => Some(brush.clone()), _ => None } } None => None };
             if let Some(st) = self.files.studio.as_mut() { if st.paint(scene, &mut g.fonts, area, s, own.as_ref(), &ink) { g.window.request_redraw(); } }
         }
+        // (these two are drawn AFTER the large view: drawn before it, as at first, they lay under it - a path's anchors and
+        // handles were not seen on a PDF's page or a picture opened large, the user's walk 2026-11-18)
+        // a path tool on a page: the selected pen path's anchors and handles, the box being dragged
+        if let Some((frame, pw, l)) = self.files.pshow.as_ref() { self.files.pedit.paint(scene, l, kurbo::Affine::translate((frame.x0, frame.y0)) * kurbo::Affine::scale(frame.width() / pw.max(1e-9))); }
+        else if let (Some((a, b)), Some((_, frame, _, _, size, ..))) = (self.files.pedit.marquee, self.files.pctx.as_ref()) { let at = kurbo::Affine::translate((frame.x0, frame.y0)) * kurbo::Affine::scale(frame.width() / size.0.max(1e-9)); let r = Rect::from_points(at * a, at * b); let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff);
+            scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, blue.multiply_alpha(0.19), None, &r); scene.stroke(&kurbo::Stroke::new(1.0), kurbo::Affine::IDENTITY, blue, None, &r); }
+        // the pen's path under way on a page: its anchors, its handles, the piece the next click would add
+        if let (Some(pl), Some((_, frame, _, _, size))) = (self.files.path_live.as_ref(), self.files.path_host.as_ref()) { pl.paint(scene, kurbo::Affine::translate((frame.x0, frame.y0)) * kurbo::Affine::scale(frame.width() / size.0.max(1e-9))); }
         self.bar.paint_tooltip(scene, &mut g.fonts, view, now); self.foot.paint_tooltip(scene, &mut g.fonts, view, now);
         if self.ctx.is_open() { self.ctx.paint(scene, &mut g.fonts, s); }
         if let Some(mb) = self.menubar.as_ref() { mb.bar.paint(scene, &mut g.fonts, s); mb.bar.paint_menus(scene, &mut g.fonts, s); }
