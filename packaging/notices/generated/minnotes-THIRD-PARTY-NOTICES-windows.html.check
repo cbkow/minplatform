@@ -1,5 +1,5 @@
-lock 0b6e30c1a08b1d6ba8ae92e597f699c88e477297
-version 3.0.1
+lock f689f67efc6ece716156bd74ae1405542c1b421b
+version 3.0.2
 ffmpeg amf avisynth chromaprint cuda-llvm ffnvcodec fontconfig frei0r gmp gpl iconv lcms2 libaom libaribb24 libaribcaption libass libbluray libdav1d libdavs2 libdvdnav libdvdread libfreetype libfribidi libgme libharfbuzz libjxl libkvazaar liblcevc-dec libmp3lame liboapv libopencore-amrnb libopencore-amrwb libopenh264 libopenjpeg libopenmpt libopus libplacebo librav1e librist librsvg librubberband libsnappy libsoxr libsrt libssh libsvtav1 libtheora libtwolame libuavs3d libvidstab libvmaf libvorbis libvpl libvpx libvvenc libwebp libx264 libx265 libxavs2 libxml2 libxvid libzimg libzmq lv2 lzma openal opencl pthreads schannel sdl2 shared vaapi vapoursynth version3 vulkan zlib
 port bzip2 1.0.8#6
 port expat 2.9.0
@@ -19,6 +19,8 @@ port zlib 1.3.2#3
 port zstd 1.5.7
 file Imath-*.dll
 file OpenEXRCore-*.dll
+file UFB
+file UFB.exe
 file av*-*.dll
 file bz2.dll
 file concrt*.dll
@@ -35,6 +37,8 @@ file libav*.dylib
 file liblzma.dll
 file libsw*.dylib
 file minNotes
+file minRender
+file minRender.exe
 file msvcp*.dll
 file openjph*.dll
 file qcview
