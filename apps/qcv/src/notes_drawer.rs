@@ -17,7 +17,8 @@ fn tr(s: &str) -> &str { min_i18n::trc("NotesPanel", s) }
 pub const HEIGHT_DEFAULT: f64 = 340.0; pub const HEIGHT_MIN: f64 = 320.0; pub const HEIGHT_MAX: f64 = 720.0;
 const CARD_W: f64 = 240.0; const THUMB_H: f64 = 135.0; const ADD_W: f64 = 120.0; const PICK_W: f64 = 240.0;
 /// the tools: Spectrum 2's M action buttons (32) in one column, rounded like the panels (the walk)
-const TOOL_B: f64 = 32.0; const TOOL_GAP: f64 = 4.0; const TOOLS_W: f64 = TOOL_B;
+const TOOL_B: f64 = 28.0;   // (32 until the pen made eight: 8 × 32 + 7 × 4 + the insets = 300 stood in a body of 292 at the default height, 272 at the least; 28 gives 268)
+ const TOOL_GAP: f64 = 4.0; const TOOLS_W: f64 = TOOL_B;
 pub const TOOLS: [(Tool, &str, &str); 8] = [
     (Tool::Select, "cursor", "Select (drag to move, corners to scale, Del to remove; click again to exit)"), (Tool::Freehand, "pencil-simple", "Freehand"), (Tool::Pen, "pen-nib", "Pen (click for corners, drag for curves; Enter to finish, the first point to close)"),
     (Tool::Rectangle, "rectangle", "Rectangle"), (Tool::Oval, "circle", "Oval"), (Tool::Arrow, "arrow-right", "Arrow"), (Tool::Line, "line-segment", "Line"),

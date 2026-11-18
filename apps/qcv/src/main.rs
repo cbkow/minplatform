@@ -692,8 +692,9 @@ impl App {
         let (vw, vh) = img.1;
         // the display aspect: a capture is already at it; an older clean frame (QCView's, at the source size) is widened to it
         let (dw, dh) = g.presenter.engine.display_dims();
-        let w = if dw > 0 && dh > 0 { ((vh as f64) * dw as f64 / dh as f64).round().max(1.0) as u32 } else { vw.max(1) };
-        let h = vh.max(1);
+        let lim = g.presenter.engine.device.limits().max_texture_dimension_2d.max(1);   // (a capture is never wider than the device's largest texture: row 568)
+        let w = (if dw > 0 && dh > 0 { ((vh as f64) * dw as f64 / dh as f64).round().max(1.0) as u32 } else { vw.max(1) }).min(lim);
+        let h = vh.max(1).min(lim);
         let dev = g.presenter.engine.device.clone(); let q = g.presenter.engine.queue.clone();
         if g.thumb_layer.is_none() { g.thumb_layer = min_ui::UiLayer::new(&dev, w, h).ok(); }
         let Some(layer) = g.thumb_layer.as_mut() else { return };

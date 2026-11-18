@@ -775,6 +775,16 @@ impl Engine {
         let m = self.effective_meta(self.base?.meta);
         matches!(m.transfer, Transfer::Pq | Transfer::Hlg).then_some(1000.0)
     }
+    /// The size a capture is made at: the display size, brought down in proportion when a side is longer than the device's
+    /// largest texture. (A 5040 x 3780 anamorphic picture shown at its 2:1 pixel aspect is 10080 wide; the device's limit
+    /// is 8192, and the capture's texture was refused - the application ended on the first note drawn, 2026-11-18.)
+    pub fn capture_dims(&self) -> (u32, u32) {
+        let (w, h) = self.display_dims(); let (w, h) = (w.max(1), h.max(1));
+        let lim = self.device.limits().max_texture_dimension_2d.max(1);
+        if w <= lim && h <= lim { return (w, h) }
+        let k = lim as f64 / w.max(h) as f64;
+        (((w as f64 * k).floor() as u32).clamp(1, lim), ((h as f64 * k).floor() as u32).clamp(1, lim))
+    }
     /// A CAPTURE (canon row 216): the shown frame at its display size (pixel aspect + rotation applied) through the same
     /// passes as the screen — stage 1 with the clip's overrides, the colour chain, and (when `aids`) the viewer aids — but no
     /// output gain (Windows' SDR white is the screen's business), no background, no UI, no waveform; over black. Returns
@@ -784,7 +794,7 @@ impl Engine {
     /// `capture` returns it). Row 223: screenshots keep alpha when the media has it.
     pub fn capture_with_alpha(&mut self, aids: bool) -> Result<(Vec<f32>, Vec<f32>, u32, u32), Error> {
         if self.shown.is_none() { return Err(Error::NoFrame) }
-        let (w, h) = self.display_dims(); let (w, h) = (w.max(1), h.max(1));
+        let (w, h) = self.capture_dims();
         let saved = (self.viewport, self.content, self.out_gain, self.aids, self.scope_view); let place = self.place.take();   // a host's own placing is the screen's, never a capture's
         // the Video emulation stays as the screen has it (canon row 262, reversing row 246's "the screen only")
         self.viewport = (w, h); self.content = None; self.out_gain = 1.0; if !aids { self.aids = ViewerAids::default(); } self.scope_view = None;
@@ -834,7 +844,7 @@ impl Engine {
                     if self.target_format != wgpu::TextureFormat::Rgba16Float { return Err(Error::NoFormat) }
                     let lead = if d.a.has_frame() { &d.a } else { &d.b };
                     let lead_region = region(lead, [0, 0, 0, 0]);
-                    let (w, h) = lead.display_dims(); let (w, h) = (w.max(1), h.max(1));
+                    let (w, h) = lead.capture_dims();
                     d.layout((w, h), None, self.display, if aids { self.aids } else { ViewerAids::default() }, 1.0, None);
                     let tex = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("dual capture"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: self.target_format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
                     let view = tex.create_view(&Default::default());
