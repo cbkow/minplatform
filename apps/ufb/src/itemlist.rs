@@ -30,7 +30,8 @@ pub enum Act { /// an item was pressed (its place among the job's items); its st
     Choose(usize), Star(usize), Check(usize, usize), /// a text-like cell was pressed: its field is to open; a dropdown cell: its options, at this point
     Edit(usize, usize), Options(usize, usize, (f64, f64)), /// the secondary button on the header (on a column in view, or not), or on a row
     HeadMenu(Option<usize>, (f64, f64)), RowMenu(usize, (f64, f64)), /// a divider was let go: the column's new width
-    Width(usize, f64) }
+    Width(usize, f64), /// a link of a Links cell was pressed: the address, as it is handed to the system (or a `ufb:` / `union:` link)
+    Link(String) }
 /// A cell being typed into.
 pub struct Edit { pub item: PathBuf, pub col: usize, pub field: TextField }
 
@@ -47,6 +48,8 @@ pub struct ItemList {
     pub hbar: ScrollBar, pub hover: Option<usize>, pub edit: Option<Edit>,
     /// where the columns lie (px): the name, each column in view, the date; the divider in hand (column, x at the press, width then)
     name_x: (f64, f64), xs: Vec<(f64, f64)>, mod_x: Option<(f64, f64)>, drag: Option<(usize, f64, f64)>, over_div: bool, scale: f64,
+    /// the links of the Links cells as they were drawn (row 584): where each lies, what it opens; the pointer is on one
+    links: Vec<(Rect, String)>, over_link: bool,
 }
 
 /// The milliseconds of a day's local midnight (1.4.2's date value).
@@ -124,7 +127,7 @@ fn compare(kind: &str, a: Option<&Value>, b: Option<&Value>) -> std::cmp::Orderi
     text_of(kind, a).to_lowercase().cmp(&text_of(kind, b).to_lowercase())
 }
 
-impl Default for ItemList { fn default() -> ItemList { ItemList { cols: vec![], hidden: vec![], meta: HashMap::new(), missing: Default::default(), also: Default::default(), sort: None, order: vec![], show_modified: true, rect: Rect::ZERO, bar: ScrollBar::default(), hbar: ScrollBar::horizontal(), hover: None, edit: None, name_x: (0.0, 0.0), xs: vec![], mod_x: None, drag: None, over_div: false, scale: 1.0 } } }
+impl Default for ItemList { fn default() -> ItemList { ItemList { cols: vec![], hidden: vec![], meta: HashMap::new(), missing: Default::default(), also: Default::default(), sort: None, order: vec![], show_modified: true, rect: Rect::ZERO, bar: ScrollBar::default(), hbar: ScrollBar::horizontal(), hover: None, edit: None, name_x: (0.0, 0.0), xs: vec![], mod_x: None, drag: None, over_div: false, scale: 1.0, links: vec![], over_link: false } } }
 impl ItemList {
     /// The columns and the values of a (job, section), as the database has them now.
     pub fn load(&mut self, job: &std::path::Path, folder: &str) {
@@ -176,6 +179,9 @@ impl ItemList {
     pub fn reveal(&mut self, pos: usize) { let (top, h, row) = (pos as f64 * ROW * self.scale, self.body().height() - 8.0 * self.scale, ROW * self.scale); if top < self.bar.offset { self.bar.offset = top; } else if top + row > self.bar.offset + h { self.bar.offset = (top + row - h).max(0.0); } }
     /// A divider is under the pointer or in hand (the window shows the resize cursor).
     pub fn resizing(&self) -> bool { self.over_div || self.drag.is_some() }
+    /// The pointer is on a link of a Links cell (the window shows the hand).
+    pub fn on_link(&self) -> bool { self.over_link }
+    fn link_at(&self, x: f64, y: f64) -> Option<&str> { let b = self.body(); if !b.contains(kurbo::Point::new(x, y)) { return None } self.links.iter().find(|(r, _)| r.contains(kurbo::Point::new(x, y))).map(|(_, u)| u.as_str()) }
     pub fn animating(&self, now: Instant) -> bool { self.bar.animating(now) || self.hbar.animating(now) || self.edit.is_some() }
 
     /// A cell's field is opened over it, with what the cell holds, all of it chosen.
@@ -205,6 +211,7 @@ impl ItemList {
         }
         self.over_div = at.is_some_and(|(x, y)| head.contains(kurbo::Point::new(x, y)) && self.xs.iter().any(|(_, b)| (x - b).abs() <= GRIP * s));
         self.hover = at.and_then(|(x, y)| self.row_at(x, y));
+        self.over_link = at.is_some_and(|(x, y)| self.link_at(x, y).is_some());
         match *e {
             Event::Down { x, y, button } if head.contains(kurbo::Point::new(x, y)) => {
                 let col = self.col_at(x);
@@ -221,6 +228,8 @@ impl ItemList {
                 else if button == Button::Primary {
                     out.push(Act::Choose(i));
                     if x < self.name_x.0 { out.push(Act::Star(i)); }
+                    // a link of a Links cell opens (1.4.2: "click opens externally"); the rest of the cell is typed into
+                    else if let Some(u) = self.link_at(x, y) { out.push(Act::Link(u.to_string())); }
                     else if let Some(k) = self.col_at(x) { match kind_of(&self.cols[k].kind) {
                         "checkbox" => out.push(Act::Check(i, k)),
                         // (a dropdown with no options is typed into, as 1.4.2's falls back to text)
@@ -253,7 +262,7 @@ impl ItemList {
         scene.pop_layer();
         paint::hline(scene, head.x0, head.x1, head.y1 - s, s, t::DIVIDER_COLOR);
         // -- the rows
-        let today = format::local(format::now_secs());
+        let today = format::local(format::now_secs()); self.links.clear();
         scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &body);
         for (pos, i) in self.order.iter().enumerate() {
             let Some(it) = items.get(*i) else { continue }; let row = self.row_rect(pos); if row.y1 < body.y0 || row.y0 > body.y1 { continue }
@@ -280,7 +289,22 @@ impl ItemList {
                         // a chip in the option's colour; a value that matches no option is grey (1.4.2)
                         crate::chips::paint_chip(scene, fonts, &text, c.options.iter().find(|o| o.0 == text).and_then(|o| o.1.as_deref()), a + pad - 2.0 * s, row.y0 + row.height() / 2.0, room + 4.0 * s, s); } }
 
-                    kind => { let text = text_of(&c.kind, v); let shown = match kind { "notes" => text.lines().next().unwrap_or("").to_string(), "links" => text.split([',', '\n']).next().unwrap_or("").trim().to_string(), _ => text };
+                    // links (row 584): as many as the cell holds, each in the accent colour and pressed by itself; the
+                    // rest as a count. A text that is no address is drawn as plain text.
+                    "links" => { let all = crate::weblink::of_cell(&text_of(&c.kind, v)); let (mut x, end) = (a + pad, a + pad + room); let gap = 10.0 * s;
+                        for (n, (written, opens)) in all.iter().enumerate() {
+                            let rest = all.len() - n; let more = if rest > 1 { fonts.layout_fit(&format!("+{}", rest - 1), Family::Sans, small, t::FONT_WEIGHT_REGULAR as f32, quiet, 60.0 * s).width() as f64 + gap } else { 0.0 };
+                            let shown = written.strip_prefix("https://").or_else(|| written.strip_prefix("http://")).unwrap_or(written); let shown = shown.strip_prefix("www.").unwrap_or(shown).trim_end_matches('/');
+                            let full = fonts.layout_fit(shown, Family::Sans, small, t::FONT_WEIGHT_REGULAR as f32, color, 4000.0).width() as f64;
+                            // (the first is always drawn, cut short if it must be; a later one only whole)
+                            if n > 0 && x + full + more > end { let l = fonts.layout_fit(&format!("+{rest}"), Family::Sans, small, t::FONT_WEIGHT_REGULAR as f32, quiet, (end - x).max(4.0)); draw_layout(scene, &l, Affine::translate((x, mid(l.height() as f64)))); break }
+                            let ink = if opens.is_some() && !strong { paint::color(t::ACCENT_CONTENT_COLOR_DEFAULT) } else { color };
+                            let l = fonts.layout_fit(shown, Family::Sans, small, t::FONT_WEIGHT_REGULAR as f32, ink, (end - x - more).max(4.0)); let (w, h) = (l.width() as f64, l.height() as f64);
+                            draw_layout(scene, &l, Affine::translate((x, mid(h))));
+                            if let Some(u) = opens { let r = Rect::new(x, mid(h), x + w, mid(h) + h); if self.over_link && self.hover == Some(pos) { paint::rect(scene, Rect::new(r.x0, r.y1 - s, r.x1, r.y1), if strong { t::RAIL_ROW_ACTIVE_LABEL } else { t::ACCENT_CONTENT_COLOR_DEFAULT }); } self.links.push((r, u.clone())); }
+                            x += w + gap;
+                        } }
+                    kind => { let text = text_of(&c.kind, v); let shown = match kind { "notes" => text.lines().next().unwrap_or("").to_string(), _ => text };
                         if !shown.is_empty() { let l = fonts.layout_fit(&shown, Family::Sans, small, t::FONT_WEIGHT_REGULAR as f32, color, room); let x = if kind == "number" { b - pad - l.width() as f64 } else { a + pad }; draw_layout(scene, &l, Affine::translate((x, mid(l.height() as f64)))); } }
                 }
             }

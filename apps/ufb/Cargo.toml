@@ -38,6 +38,9 @@ qcv-timeline = { path = "../../crates/qcv-timeline" }
 # what the application remembers between launches (the family's settings service)
 min-settings = { path = "../../crates/min-settings" }
 ufb-projtype = { path = "../../crates/ufb-projtype" }
+# "New minNote": the file is made by minNotes' own store (canon row 587)
+mn-store = { path = "../../crates/mn-store" }
+mn-doc = { path = "../../crates/mn-doc" }
 uuid = { workspace = true }
 rfd = "0.18"
 # archives (row 508, points 5-9): our own code, no bundled tool. All pure Rust (nothing to build in C on either system).

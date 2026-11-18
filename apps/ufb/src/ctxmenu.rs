@@ -48,7 +48,9 @@ pub fn rows_for(entries: &[(bool, bool)], sequence: bool) -> Vec<Row> {
     rows
 }
 /// The rows for the folder in view itself (a click on the empty part of a pane).
-pub fn rows_for_folder() -> Vec<Row> { vec![ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Reveal, Row::Sep, ours(NEW_FOLDER, "New Folder"), ours(PASTE, "Paste"), Row::Sep, ours(REFRESH, "Refresh")] }
+/// Rows 585, 587: a web link's file and a minNotes note, made in the folder in view (1.4.2's "New Web Link" and "Add Note").
+pub const NEW_LINK: u32 = 86; pub const NEW_NOTE: u32 = 87;
+pub fn rows_for_folder() -> Vec<Row> { vec![ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Reveal, Row::Sep, ours(NEW_FOLDER, "New Folder"), ours(NEW_LINK, "New Web Link\u{2026}"), ours(NEW_NOTE, "New minNote\u{2026}"), ours(PASTE, "Paste"), Row::Sep, ours(REFRESH, "Refresh")] }
 /// The rows for a job in the sidebar.
 pub fn rows_for_job() -> Vec<Row> { vec![ours(OPEN, "Open"), ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal, Row::Sep, ours(UNSUBSCRIBE, "Unsubscribe")] }
 /// The row that makes a folder a job in the sidebar, or takes it out again.
@@ -460,7 +462,7 @@ mod tests {
         assert_eq!(labels(&rows_for(&[(false, false), (false, false)], false)), ["<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Group as Sequence", "--", "Duplicate", "Copy", TRASH_LABEL, "--", "<Share>"], "several files: no Rename; they can be made one sequence");
         assert_eq!(labels(&rows_for(&[(false, false)], true)), ["Preview", "<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Show as Separate Files", "--", "Duplicate", "Copy", TRASH_LABEL, "--", "<Share>"], "a sequence: no Rename; it can be shown as its files");
         assert_eq!(labels(&rows_for(&[(true, false), (false, false)], false)), ["<Show in Finder>", "--", "Duplicate", "Copy", TRASH_LABEL, "--", "<Share>"], "a folder among them: nothing opens");
-        assert_eq!(labels(&rows_for_folder()), ["Open in New Tab", "Open in New Window", "<Show in Finder>", "--", "New Folder", "Paste", "--", "Refresh"]);
+        assert_eq!(labels(&rows_for_folder()), ["Open in New Tab", "Open in New Window", "<Show in Finder>", "--", "New Folder", "New Web Link\u{2026}", "New minNote\u{2026}", "Paste", "--", "Refresh"]);
         assert_eq!(labels(&rows_for_place()), ["Open", "Open in New Tab", "Open in New Window", "--", "<Show in Finder>"]);
     }
 }

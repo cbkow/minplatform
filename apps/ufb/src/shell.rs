@@ -168,6 +168,9 @@ impl App {
                 if self.focused == Some(id) { self.focused = None; } }
             Out::Minimize => if let Some(w) = self.windows.get(&id) { w.window.set_minimized(true); },
             Out::Quit => done = true,
+            // (a web link's file: its address goes to the system, alike for `.url` and `.webloc` on both systems; one
+            // that names anything but the web is not opened at all - row 585)
+            Out::OpenDefault(path) if crate::weblink::is_link(&path) => if let Some(u) = crate::weblink::read(&path) { crate::sysopen::open_url(&u) },
             Out::OpenDefault(path) => crate::sysopen::open(&path),
             Out::OpenWith(path, app) => crate::sysopen::open_with(&path, &app),
             Out::OpenAs(path) => crate::sysopen::open_as(&path), Out::Reveal(paths) => crate::sysopen::reveal(&paths),

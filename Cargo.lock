@@ -6550,6 +6550,8 @@ dependencies = [
  "min-theme",
  "min-transcode",
  "min-ui",
+ "mn-doc",
+ "mn-store",
  "muda 0.21.2",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",

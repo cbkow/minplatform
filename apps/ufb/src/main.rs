@@ -31,6 +31,7 @@ mod logfile;
 mod login;
 mod menu;
 mod mesh;
+mod mnote;
 mod model;
 mod ops;
 mod pane;
@@ -46,6 +47,7 @@ mod thumbs;
 mod tracker;
 mod transcode;
 mod ui;
+mod weblink;
 mod webview;
 
 /// What the command line asked for: the folder to open, the test favorites, and the folders this build may CHANGE

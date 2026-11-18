@@ -62,6 +62,9 @@ pub enum Op {
     NewJob { parent: PathBuf, number: String, name: String },
     /// An item is added to a job's section `dir`, by the kind the project type gives the section.
     AddItem { dir: PathBuf, name: String },
+    /// A web link's file is made in `dir` (row 585); a minNotes collection with one note (row 587).
+    NewLink { dir: PathBuf, name: String, url: String },
+    NewNote { dir: PathBuf, name: String },
     /// Something another worker made (an archive, what was unpacked from one) joins the undo list under its name.
     Note { made: PathBuf, label: &'static str },
     Undo,
@@ -69,7 +72,7 @@ pub enum Op {
     Redo,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind { NewFolder, Rename, Duplicate, Trash, Delete, Undo, Copy, Move, NewJob, AddItem, Extract, Compress, Transcode }
+pub enum Kind { NewFolder, Rename, Duplicate, Trash, Delete, Undo, Copy, Move, NewJob, AddItem, Extract, Compress, Transcode, NewLink, NewNote }
 
 /// What to do about a name that is taken. `Stop`: nothing more of this operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -413,7 +416,7 @@ pub struct Engine { pub guard: Guard, /// what can be undone, each with the oper
     undo: Vec<(Record, Option<Op>)>, /// what was undone and can be done again, the newest last; a new operation empties it
     redo: Vec<Op>, running: Option<Op> }
 /// An operation's name as the Edit menu says it after "Redo".
-fn op_name(op: &Op) -> &'static str { match op { Op::NewFolder { .. } => "New Folder", Op::Rename { .. } | Op::RenameMany { .. } => "Rename", Op::Duplicate { .. } | Op::DuplicateSequence { .. } => "Duplicate", Op::Trash { .. } => "Move to Trash", Op::Delete { .. } => "Delete", Op::Transfer { mv, .. } => if *mv { "Move" } else { "Copy" }, Op::NewJob { .. } => "New Job", Op::AddItem { .. } => "Add Item", Op::Note { .. } | Op::Undo | Op::Redo => "" } }
+fn op_name(op: &Op) -> &'static str { match op { Op::NewFolder { .. } => "New Folder", Op::Rename { .. } | Op::RenameMany { .. } => "Rename", Op::Duplicate { .. } | Op::DuplicateSequence { .. } => "Duplicate", Op::Trash { .. } => "Move to Trash", Op::Delete { .. } => "Delete", Op::Transfer { mv, .. } => if *mv { "Move" } else { "Copy" }, Op::NewJob { .. } => "New Job", Op::AddItem { .. } => "Add Item", Op::NewLink { .. } => "New Web Link", Op::NewNote { .. } => "New minNote", Op::Note { .. } | Op::Undo | Op::Redo => "" } }
 impl Engine {
     pub fn new(guard: Guard) -> Engine { Engine { guard, undo: vec![], redo: vec![], running: None } }
     /// What Undo would undo, as the Edit menu names it.
@@ -568,6 +571,19 @@ impl Engine {
                 }
                 rep
             }
+            // (each is undone as what a worker made: to the Trash)
+            Op::NewLink { dir, name, url } => {
+                let mut rep = Report { kind: Some(Kind::NewLink), ..Default::default() };
+                if let Err(e) = self.guard.check(&dir.join("x")) { rep.error = Some(e); return rep }
+                match crate::weblink::create(&dir, &name, &url) { Ok(p) => { rep.changed.push(dir); rep.made.push(p.clone()); self.done(Record::Result { path: p, label: "New Web Link" }); } Err(e) => rep.error = Some(e) }
+                rep
+            }
+            Op::NewNote { dir, name } => {
+                let mut rep = Report { kind: Some(Kind::NewNote), ..Default::default() };
+                if let Err(e) = self.guard.check(&dir.join("x")) { rep.error = Some(e); return rep }
+                match crate::mnote::create(&dir, &name, &crate::jobview::today()) { Ok(p) => { rep.changed.push(dir); rep.made.push(p.clone()); self.done(Record::Result { path: p, label: "New minNote" }); } Err(e) => rep.error = Some(e) }
+                rep
+            }
             Op::Note { made, label } => { self.done(Record::Result { path: made, label }); Report::default() }
             Op::Undo => self.undo_last(),
             Op::Redo => Report::default(),   // (taken in `run_with`)
@@ -670,7 +686,7 @@ fn label_of(op: &Op) -> String {
     // (one item is said by its name: the tasks' panel shows several of these under one another)
     let what = |paths: &[PathBuf]| if paths.len() == 1 { format!("\u{201c}{}\u{201d}", name_of(&paths[0])) } else { format!("{} items", paths.len()) };
     match op { Op::NewFolder { .. } => "New folder".into(), Op::Rename { .. } => "Rename".into(), Op::RenameMany { pairs } => format!("Rename {} items", pairs.len()), Op::Duplicate { paths } => format!("Duplicate {}", what(paths)), Op::DuplicateSequence { frames } => format!("Duplicate a sequence of {} frames", frames.len()), Op::Trash { paths } => format!("Move {} to the Trash", what(paths)), Op::Delete { paths } => format!("Delete {}", what(paths)),
-        Op::Transfer { paths, dest, mv } => format!("{} {} to \u{201c}{}\u{201d}", if *mv { "Move" } else { "Copy" }, what(paths), name_of(dest)), Op::Note { .. } => "Note".into(), Op::NewJob { .. } => "New job".into(), Op::AddItem { name, .. } => format!("Add \u{201c}{name}\u{201d}"), Op::Undo => "Undo".into(), Op::Redo => "Redo".into() }
+        Op::Transfer { paths, dest, mv } => format!("{} {} to \u{201c}{}\u{201d}", if *mv { "Move" } else { "Copy" }, what(paths), name_of(dest)), Op::Note { .. } => "Note".into(), Op::NewJob { .. } => "New job".into(), Op::AddItem { name, .. } => format!("Add \u{201c}{name}\u{201d}"), Op::NewLink { .. } => "New web link".into(), Op::NewNote { .. } => "New minNote".into(), Op::Undo => "Undo".into(), Op::Redo => "Redo".into() }
 }
 
 /// Start the engine's thread. `roots`: the folders this build may change things in.

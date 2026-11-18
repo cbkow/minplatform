@@ -54,7 +54,8 @@ enum Asked { /// delete these for good
     Delete(Vec<PathBuf>), /// the extension would change: the entry, the name typed, the name with the old extension kept
     Extension { path: PathBuf, typed: String, kept: String }, /// the engine's question about a name that is taken (its number)
     Conflict(u64), /// a new job in this jobs folder (its number, its name); a new item in this section's folder
-    NewJob(PathBuf), AddItem(PathBuf), /// a share to add (its address, or a folder); a share's name
+    NewJob(PathBuf), AddItem(PathBuf), /// a web link's file, a minNotes note, in this folder (rows 585, 587)
+    NewLink(PathBuf), NewNote(PathBuf), /// a share to add (its address, or a folder); a share's name
     AddShare, RenameShare(usize), ShareLetter(usize), /// quit although tasks run or wait
     Quit, /// several entries to rename in one step (each: its path, whether it is a folder)
     BatchRename(Vec<(PathBuf, bool)>), /// the password of this archive
@@ -442,6 +443,7 @@ impl Ui {
                 let mut p = crate::chips::ChipPicker::new(it.path.clone(), k, c.options.clone(), cur); p.open(&mut self.fonts, Rect::new(at.0, at.1 - 24.0 * s, at.0 + 120.0 * s, at.1), Rect::new(0.0, 0.0, size.width as f64, size.height as f64), s); self.chip = Some(p); } },
             Act::RowMenu(i, at) => if let Some(it) = self.tracker.as_ref().and_then(|t| row(t, i)) { self.meta_ctx = (None, Some(i), vec![], vec![]); self.menu_for = Some((None, it.path.clone())); self.menu_job = false; let many = self.tracker.as_ref().map(|t| t.sel.len()).filter(|n| *n > 1 && self.tracker.as_ref().is_some_and(|t| t.sel.contains(&it.path)));
                 let rows = if let Some(n) = many { self.bulk_rows(n) } else if self.tracker.as_ref().is_some_and(|t| t.lost(&it.path)) { crate::ctxmenu::rows_for_lost() } else { crate::ctxmenu::rows_for_tracked() }; self.show_menu(crate::ctxmenu::Ask { at, paths: if many.is_some() { vec![] } else { vec![it.path] }, rows }); },
+            Act::Link(u) => { self.trk_press = None; self.open_link(&u); }
             Act::HeadMenu(..) | Act::Width(..) => {}
         } }
     }
@@ -453,6 +455,7 @@ impl Ui {
             Act::Star(i) => if let Some(it) = self.job.as_ref().and_then(|j| j.items.get(i)).cloned() { let on = !self.items.tracked(&it); let r = crate::db::with(|d| d.set_tracked(&job, &it.path, &sec, on)); self.meta_err(r); self.items_reload(); },
             Act::Check(i, k) => if let (Some(it), Some(c)) = (self.job.as_ref().and_then(|j| j.items.get(i)).cloned(), self.items.cols.get(k).cloned()) { let on = !crate::itemlist::is_checked(self.items.value(&it, &c)); let r = crate::db::with(|d| d.set_field(&job, &it.path, &sec, &c.uuid, serde_json::Value::Bool(on))); self.meta_err(r); self.items_reload(); },
             Act::Edit(i, k) => self.edit_cell(i, k),
+            Act::Link(u) => self.open_link(&u),
             // a dropdown cell: its options as chips, in a popover under it
             Act::Options(i, k, at) => if let (Some(c), Some(it)) = (self.items.cols.get(k).cloned(), self.job.as_ref().and_then(|j| j.items.get(i)).cloned()) {
                 let s = self.scale(); let size = self.window.surface_size(); let cur = crate::itemlist::text_of(&c.kind, self.items.value(&it, &c));
@@ -571,6 +574,22 @@ impl Ui {
         let mut d = Dialog::new(title, "", vec![("Cancel", Variant::Secondary), ("Add", Variant::Primary)]).with_field("Name", ""); d.show_with("", &mut self.fonts);
         self.dialog = Some((d, Asked::AddItem(dir))); self.dialog_preview();
     }
+    /// A link of a Links cell (row 584): an address of the web goes to the system; one of the application's own is gone to here.
+    fn open_link(&mut self, link: &str) { if crate::weblink::own(link) { self.open_text(link); } else { crate::sysopen::open_url(link); } }
+    /// "New Web Link" (row 585, 1.4.2's): the address - the clipboard's when it holds one - and a name; "New minNote" (row 587).
+    fn ask_new_file(&mut self, note: bool) {
+        use min_ui::{dialog::Dialog, text_button::Variant};
+        if self.dialog.is_some() || self.prefs.is_some() { return }
+        let dir = self.pane().path().to_path_buf();
+        if !crate::ops::allowed_in(&dir) { self.toast.show("This build changes nothing outside the folders it was started with.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
+        if note { let mut d = Dialog::new("New minNote", "", vec![("Cancel", Variant::Secondary), ("Create", Variant::Primary)]).with_field("Name", ""); d.show_with("", &mut self.fonts); self.dialog = Some((d, Asked::NewNote(dir))); }
+        else {
+            let clip = if std::env::var_os("UFB_DEMO").is_some() { String::new() } else { arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default() };
+            let mut d = Dialog::new("New Web Link", "", vec![("Cancel", Variant::Secondary), ("Create", Variant::Primary)]).with_field("Address", "https://\u{2026}").with_field("Name", "Optional: the site's name is used");
+            d.show_with(if crate::weblink::looks_like(&clip) { clip.trim() } else { "" }, &mut self.fonts); self.dialog = Some((d, Asked::NewLink(dir)));
+        }
+        self.dialog_preview();
+    }
     fn ask_new_job(&mut self) {
         use min_ui::{dialog::Dialog, text_button::Variant};
         let parent = self.pane().path().to_path_buf(); if !crate::jobview::is_jobs_folder(&parent) { self.toast.show("A new job is made in a jobs folder.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
@@ -596,6 +615,13 @@ impl Ui {
                 else { let (p, n) = &pairs[0]; format!("{}  \u{2192}  {n}   \u{b7}   {} of {} change", p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default(), crate::pane::group(pairs.len()), crate::pane::group(items.len())) };
             if let Some(b) = d.buttons.last_mut() { b.enabled = !pairs.is_empty() && fault.is_none() && !twice; }
             return
+        }
+        match asked {
+            Asked::NewNote(dir) => { let name = d.value_at(0); let file = if name.is_empty() { Err(String::new()) } else { crate::mnote::file_name(&crate::mnote::names_in(dir), &crate::jobview::today(), &name) };
+                d.body = match &file { Ok(f) => format!("File:  {f}"), Err(why) if name.is_empty() || why.is_empty() => "File:".into(), Err(why) => why.clone() }; if let Some(b) = d.buttons.last_mut() { b.enabled = file.is_ok(); } return }
+            Asked::NewLink(_) => { let (url, name) = (d.value_at(0), d.value_at(1)); let to = crate::weblink::address(&url);
+                d.body = match &to { Some(u) => format!("File:  {}", crate::weblink::file_name(&name, u)), None if url.is_empty() => "File:".into(), None => "An address of the web: http://, https://, mailto: or a site's name.".into() }; if let Some(b) = d.buttons.last_mut() { b.enabled = to.is_some(); } return }
+            _ => {}
         }
         if let Some(name) = made { let ok = ufb_projtype::check_name("name", &name).is_ok(); d.body = if name.is_empty() { "Folder:".into() } else { format!("Folder:  {name}") }; if let Some(b) = d.buttons.last_mut() { b.enabled = ok; } }
     }
@@ -1167,6 +1193,8 @@ impl Ui {
                 self.reload_jobs(); self.open_place(job.clone(), true);
             }
             (Some(crate::ops::Kind::AddItem), Some(item)) => if let Some(j) = self.job.as_mut() { j.choose = Some(item.clone()); },
+            // a new note opens in minNotes (the application that has `.mnd` files; without it the file is there all the same)
+            (Some(crate::ops::Kind::NewNote), Some(note)) => if std::env::var_os("UFB_DEMO").is_none() { self.out.push(Out::OpenDefault(note.clone())); },
             _ => {}
         } }
         if let Some(j) = self.job.as_mut() { if rep.changed.iter().any(|c| c.starts_with(&j.path) || j.path.starts_with(c)) { j.reload(); } }
@@ -1282,6 +1310,8 @@ impl Ui {
             // (through the engine, as every change to the disk: one at a time, behind the belt, and undone by Undo)
             Asked::NewJob(parent) => if button == 1 { crate::ops::submit(self.id, crate::ops::Op::NewJob { parent, number: d.value_at(0), name: d.value_at(1) }); },
             Asked::AddItem(dir) => if button == 1 { crate::ops::submit(self.id, crate::ops::Op::AddItem { dir, name: d.value_at(0) }); },
+            Asked::NewLink(dir) => if button == 1 { crate::ops::submit(self.id, crate::ops::Op::NewLink { dir, url: d.value_at(0), name: d.value_at(1) }); },
+            Asked::NewNote(dir) => if button == 1 { crate::ops::submit(self.id, crate::ops::Op::NewNote { dir, name: d.value_at(0) }); },
             Asked::SyncSet => if button == 1 { let (farm, node, only) = (d.value_at(0), d.value_at(1), if crate::identity::belt() { d.value_at(2) } else { String::new() }); crate::settings::with(|s| { s.set_str("sync/farm", &farm); s.set_str("sync/node", &node); s.set_str("sync/only", &only); s.set_bool("sync/on", true); }); self.apply_sync(); },
             Asked::ShareLetter(i) => if button == 1 { match crate::shares::letter_of(&d.value_at(0)) { Some(l) => if let Some(sh) = self.shares.get_mut(i) { sh.letter = l; crate::shares::save(&self.shares); }, None => self.toast.show("A drive letter is one letter, A to Z.", min_ui::toast::ToastKind::Notice, Instant::now()) } },
             Asked::AddShare => if button == 1 { let text = d.value_at(0); self.add_share(&text); },
@@ -1551,6 +1581,7 @@ impl Ui {
             crate::ctxmenu::ENCLOSING => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; self.show_enclosing(); },
             SPLIT => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.panes[i].split_chosen(); },
             GROUP => if let Some(i) = pane.filter(|i| *i < self.shown()) { if !self.panes[i].group_chosen() { self.toast.show("These cannot be one sequence: their names differ in more than a number.", min_ui::toast::ToastKind::Notice, Instant::now()); } },
+            crate::ctxmenu::NEW_LINK | crate::ctxmenu::NEW_NOTE => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.ask_new_file(id == crate::ctxmenu::NEW_NOTE); }
             REFRESH | RENAME | TRASH | NEW_FOLDER | DUPLICATE | COPY | PASTE | PREVIEW => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; }
                 self.command(match id { RENAME => Cmd::Rename, TRASH => Cmd::Trash, NEW_FOLDER => Cmd::NewFolder, DUPLICATE => Cmd::Duplicate, COPY => Cmd::Copy, PASTE => Cmd::Paste, PREVIEW => Cmd::Preview, _ => Cmd::Refresh }); }
             _ => {}
@@ -1560,7 +1591,7 @@ impl Ui {
     /// shows that kind, else the default application's; "Open" on a file is always the default application's (row 473, point 2).
     fn after_pane_events(&mut self) {
         for i in 0..self.panes.len() {
-            if let Some(row) = self.panes[i].preview.take() { match self.panes[i].entry(row) { Some((path, ..)) if !crate::lightbox::handles(&crate::lightbox::ext_of(&path)) => self.out.push(Out::OpenDefault(path)), Some(_) => self.open_lightbox(i, row), None => {} } }
+            if let Some(row) = self.panes[i].preview.take() { match self.panes[i].entry(row) { Some((path, ..)) if !crate::lightbox::handles(&crate::lightbox::ext_of(&path)) || !crate::prefs::double_click_previews() => self.out.push(Out::OpenDefault(path)), Some(_) => self.open_lightbox(i, row), None => {} } }
             if let Some(path) = self.panes[i].open_default.take() { self.out.push(Out::OpenDefault(path)); }
         }
     }
@@ -1716,6 +1747,7 @@ impl Ui {
             let any = !acts.is_empty(); self.items_acts(acts);
             if (matches!(e, Event::Down { .. }) && in_list) || any { self.set_cursor(winit31::cursor::CursorIcon::Default); return }
             if self.items.resizing() { self.set_cursor(winit31::cursor::CursorIcon::ColResize); return }
+            if self.items.on_link() { self.set_cursor(winit31::cursor::CursorIcon::Pointer); return }
             }
         }
         // the tracker: its Due chips, its list (a press chooses, two go to the item; the cells are edited as in a job's list)
@@ -1727,11 +1759,12 @@ impl Ui {
                 if on || ed.field.dragging() { ed.field.pointer(e, &mut self.fonts); return }
                 if matches!(e, Event::Down { .. }) && !self.commit_cell() { return }
             }
-            let (acts, in_list, resizing) = match self.tracker.as_mut() { Some(tr) => { let crate::tracker::Tracker { list, rows, .. } = tr; let inl = e.pos().is_some_and(|(x, y)| list.rect.contains(kurbo::Point::new(x, y))); (list.event(e, rows, now), inl, list.resizing()) } None => (vec![], false, false) };
+            let (acts, in_list, resizing, on_link) = match self.tracker.as_mut() { Some(tr) => { let crate::tracker::Tracker { list, rows, .. } = tr; let inl = e.pos().is_some_and(|(x, y)| list.rect.contains(kurbo::Point::new(x, y))); (list.event(e, rows, now), inl, list.resizing(), list.on_link()) } None => (vec![], false, false, false) };
             if matches!(e, Event::Down { .. }) && in_list { self.leave_path(); self.leave_search(); if self.focus != Focus::Cell { self.focus = Focus::Items; } }
             let any = !acts.is_empty(); self.tracker_acts(acts);
             if (matches!(e, Event::Down { .. }) && in_list) || any { self.set_cursor(winit31::cursor::CursorIcon::Default); return }
             if resizing { self.set_cursor(winit31::cursor::CursorIcon::ColResize); return }
+            if on_link { self.set_cursor(winit31::cursor::CursorIcon::Pointer); return }
         }
         // (in a job with nothing chosen no pane is shown: nothing below is there to take the pointer)
         if self.blank() { self.set_cursor(if self.over_gap.is_some() { winit31::cursor::CursorIcon::ColResize } else { winit31::cursor::CursorIcon::Default }); return }
@@ -1954,6 +1987,9 @@ impl Ui {
             "items" => if let Some(j) = self.job.as_ref() { eprintln!("UFB_DEMO: job {} sections [{}] in front {:?} (two tiers: {}): items [{}] chosen {:?}; panes at {}", j.name, j.sections.join(", "), j.section, j.two_tier, j.items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", "), j.chosen_item().map(|i| i.name.as_str()), if self.blank() { "(nothing shown)".to_string() } else { self.panes.iter().take(self.shown()).map(|p| format!("{}{}{}", p.path().display(), if p.history.can_back() { " <back" } else { "" }, if p.can_up() { " ^up" } else { "" })).collect::<Vec<_>>().join(" + ") }); },
             "subscribe" => self.subscribe(PathBuf::from(arg), true), "unsubscribe" => self.subscribe(PathBuf::from(arg), false),
             "newjob" => { self.ask_new_job(); if let Some((d, _)) = self.dialog.as_mut() { let (n, name) = arg.split_once('|').unwrap_or((arg, "")); d.fields[0].1.set_text(n); d.fields[1].1.set_text(name); } self.dialog_preview(); if self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
+            // `newlink:<address>|<name>` and `newnote:<name>` answer the question at once; `newlinkask:<address>|<name>` and `newnoteask:<name>` leave it open
+            "newlink" | "newlinkask" => { self.ask_new_file(false); if let Some((d, _)) = self.dialog.as_mut() { let (u, name) = arg.split_once('|').unwrap_or((arg, "")); d.fields[0].1.set_text(u); d.fields[1].1.set_text(name); } self.dialog_preview(); if word == "newlink" && self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
+            "newnote" | "newnoteask" => { self.ask_new_file(true); if let Some((d, _)) = self.dialog.as_mut() { d.fields[0].1.set_text(arg); } self.dialog_preview(); if word == "newnote" && self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
             "additem" => { self.ask_add_item(); if let Some((d, _)) = self.dialog.as_mut() { d.fields[0].1.set_text(arg); } self.dialog_preview(); if self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
             "tabs" => eprintln!("UFB_DEMO: tabs: {}", (0..self.tabs.len()).map(|i| { let (name, path) = self.tab_place(i); let panes = if i == self.tab { self.shown() } else if self.tabs[i].two { 2 } else { 1 }; format!("{}{name} [{}; {panes} pane(s)]", if i == self.tab { "*" } else { "" }, path.display()) }).collect::<Vec<_>>().join(" | ")),
             // the file operations, as the menus give them: `newfolder` `rename` `type:<text>` (into the name's field) `accept` `cancel` `duplicate` `trash` `deletenow` `undo` `answer:<button>`
