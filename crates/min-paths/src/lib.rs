@@ -18,6 +18,7 @@ pub mod links;
 pub mod map;
 pub mod names;
 pub mod sequence;
+pub mod sync;
 pub mod url;
 pub mod volume;
 

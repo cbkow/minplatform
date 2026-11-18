@@ -4618,3 +4618,13 @@ msgstr "Аппаратный скраббинг h264/h265"
 msgctxt "LeftRail"
 msgid "GPU decode (Vulkan/D3D12VA) when available. Turn off if playback misbehaves — forces software decode everywhere. Applies on next file load."
 msgstr "Декодирование на GPU (Vulkan/D3D12VA), когда доступно. Выключите, если воспроизведение сбоит — везде будет программное декодирование. Применяется при следующей загрузке файла."
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Export to minNotes…"
+msgstr "Экспорт в minNotes…"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Export to minNotes needs a clip that is a file"
+msgstr "Для экспорта в minNotes нужен клип, являющийся файлом"

@@ -4602,3 +4602,13 @@ msgstr "h264/h265のハードウェアスクラブ"
 msgctxt "LeftRail"
 msgid "GPU decode (Vulkan/D3D12VA) when available. Turn off if playback misbehaves — forces software decode everywhere. Applies on next file load."
 msgstr "利用可能な場合はGPUデコード (Vulkan/D3D12VA) を使用します。再生に問題があればオフにしてください — すべてソフトウェアデコードになります。次回のファイル読み込みから適用されます。"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Export to minNotes…"
+msgstr "minNotes に書き出す…"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Export to minNotes needs a clip that is a file"
+msgstr "minNotes への書き出しには、ファイルのクリップが必要です"

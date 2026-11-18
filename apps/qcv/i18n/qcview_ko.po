@@ -4602,3 +4602,13 @@ msgstr "h264/h265 하드웨어 스크럽"
 msgctxt "LeftRail"
 msgid "GPU decode (Vulkan/D3D12VA) when available. Turn off if playback misbehaves — forces software decode everywhere. Applies on next file load."
 msgstr "가능한 경우 GPU 디코딩(Vulkan/D3D12VA)을 사용합니다. 재생에 문제가 있으면 끄십시오 — 모든 경우에 소프트웨어 디코딩을 강제합니다. 다음 파일 로드 시 적용됩니다."
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Export to minNotes…"
+msgstr "minNotes로 내보내기…"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Export to minNotes needs a clip that is a file"
+msgstr "minNotes로 내보내려면 파일로 된 클립이 필요합니다"

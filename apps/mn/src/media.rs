@@ -393,7 +393,7 @@ impl Places {
         let done = (|| -> std::io::Result<()> {
             let (mut from, mut to) = (std::fs::File::open(path)?, std::fs::File::create(&tmp)?); let mut buf = vec![0u8; 1 << 20];
             loop { let n = from.read(&mut buf)?; if n == 0 { break } for b in &buf[..n] { hash = (hash ^ *b as u64).wrapping_mul(0x0000_0100_0000_01b3); } to.write_all(&buf[..n])?; }
-            to.sync_all()
+            min_paths::sync::settle(&to)
         })();
         if let Err(e) = done { let _ = std::fs::remove_file(&tmp); return Err(e.to_string()) }
         let stem: String = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default().chars().map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' }).take(60).collect();

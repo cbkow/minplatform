@@ -326,7 +326,7 @@ impl Run {
         let done = (|| -> Result<(), String> {
             zw.start_file(name, zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated)).map_err(|e| e.to_string())?;
             std::io::copy(&mut std::fs::File::open(doc).map_err(|e| e.to_string())?, &mut zw).map_err(|e| e.to_string())?;
-            zw.finish().map_err(|e| e.to_string())?.sync_all().map_err(|e| e.to_string())?;
+            min_paths::sync::settle(&zw.finish().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
             std::fs::rename(&pack.part, &pack.path).map_err(|e| e.to_string()) })();
         if done.is_err() { let _ = std::fs::remove_file(&pack.part); } done
     }
@@ -354,7 +354,7 @@ impl Run {
             if told.elapsed() > Duration::from_millis(100) { told = Instant::now(); (self.wake)(); }
             if n < buf.len() { break }
         }
-        to.sync_all().map_err(|e| fail("Writing the copy failed", e))?;
+        min_paths::sync::settle(&to).map_err(|e| fail("Writing the copy failed", e))?;
         slot.state.store(VERIFYING, Relaxed); (self.wake)();
         let (src, got) = (std::fs::metadata(&job.from).map_err(|e| fail("It cannot be read", e))?, to.metadata().map_err(|e| fail("The copy cannot be read", e))?.len());
         if got != all || src.len() != all { return Err(Fail::Why("The copy is not the size of the file \u{2014} the file may have changed while it was copied".into(), false)) }
@@ -395,7 +395,7 @@ pub fn unpack(archive: &Path, folder: &Path, done: &AtomicU64, stop: &AtomicBool
             loop { if stop.load(Relaxed) { return Err("stopped".into()) } let n = f.read(&mut buf).map_err(|e| format!("{}: {e}", rel.display()))?; if n == 0 { break }
                 out.write_all(&buf[..n]).map_err(|e| e.to_string())?; done.fetch_add(n as u64, Relaxed); if told.elapsed() > Duration::from_millis(100) { told = Instant::now(); wake(); } }
             if let Some(t) = f.last_modified().and_then(file_time) { let _ = out.set_modified(t); }
-            out.sync_all().map_err(|e| e.to_string())?; std::fs::rename(&tmp, &to).map_err(|e| e.to_string()) })();
+            min_paths::sync::settle(&out).map_err(|e| e.to_string())?; std::fs::rename(&tmp, &to).map_err(|e| e.to_string()) })();
         if let Err(e) = r { let _ = std::fs::remove_file(&tmp); return Err(e) }
         if rel.components().count() == 1 && rel.extension().is_some_and(|x| x == "mnd") { doc = Some(to); }
     }

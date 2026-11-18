@@ -3390,6 +3390,7 @@ dependencies = [
 name = "mn-store"
 version = "0.1.0"
 dependencies = [
+ "min-paths",
  "mn-doc",
  "rusqlite",
  "serde_json",

@@ -48,7 +48,7 @@ pub fn put(from: &Path, to: &Path, expect: Option<Fingerprint>) -> Result<Finger
     let tmp = to.with_file_name(format!(".{name}.{id}.tmp"));
     let result = (|| -> Result<(), PutError> {
         fs::copy(from, &tmp)?;
-        File::options().write(true).open(&tmp)?.sync_all()?;
+        min_paths::sync::settle(&File::options().write(true).open(&tmp)?)?;   // (a plain `sync_all` is refused by LucidLink: no collection could be saved there)
         // look again, at the last moment: is the document still the one this file was made from?
         if fingerprint_if_present(to)? != expect { return Err(PutError::Raced) }
         if let Err(first) = fs::rename(&tmp, to) {

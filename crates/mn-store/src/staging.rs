@@ -144,7 +144,7 @@ impl Session {
     /// `produce` writes the complete new file INTO THE SESSION, which is flushed; its path is returned.
     pub fn stage_publish(&self, produce: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<PathBuf> {
         let staged = self.dir.join("publish.mnd"); let _ = fs::remove_file(&staged);
-        let r = produce(&staged).and_then(|()| File::options().write(true).open(&staged)?.sync_all());
+        let r = produce(&staged).and_then(|()| min_paths::sync::settle(&File::options().write(true).open(&staged)?));
         if let Err(e) = r { let _ = fs::remove_file(&staged); return Err(e) }
         Ok(staged)
     }

@@ -262,7 +262,7 @@ pub fn compress(paths: &[PathBuf], cancel: &AtomicBool, say: Say) -> Result<Path
     let mut run = Run { zip: zip::ZipWriter::new(std::io::BufWriter::new(std::fs::File::create(&partial)?)), cancel, say, done: 0, total, said: Instant::now() - Duration::from_secs(1), buf: vec![0u8; 256 * 1024] };
     let done = (|| -> Result<PathBuf, Fail> {
         for p in paths { run.add(p, &inside(p))?; }
-        run.zip.finish().map_err(|e| Fail::Other(format!("The archive could not be written ({e}).")))?.into_inner().map_err(|e| Fail::from(e.into_error()))?.sync_all()?;
+        run.zip.finish().map_err(|e| Fail::Other(format!("The archive could not be written ({e}).")))?.into_inner().map_err(|e| Fail::from(e.into_error())).and_then(|f| min_paths::sync::settle(&f).map_err(Fail::from))?;
         let (stem, ext) = (name.trim_end_matches(".zip"), ".zip");
         for n in 1..10_000 { let to = parent.join(if n == 1 { name.clone() } else { format!("{stem} {n}{ext}") });
             if std::fs::symlink_metadata(&to).is_ok() { continue }

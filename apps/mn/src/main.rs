@@ -178,7 +178,9 @@ struct Importing { rx: std::sync::mpsc::Receiver<Result<import::Done, String>>, 
 struct Unpack { rx: std::sync::mpsc::Receiver<(u64, Option<Result<std::path::PathBuf, String>>)>, done: Arc<std::sync::atomic::AtomicU64>, stop: Arc<std::sync::atomic::AtomicBool>, total: u64, name: String, drawn: Instant }
 struct PdfSel { id: BlockId, a: usize, b: usize, drag: bool }
 #[derive(Default)]
-struct Files { /// the camera when Space went down over a canvas (unchanged at its release: a tap - the selected video plays or pauses)
+struct Files { /// handed over with a file to make a note of (`minnotes:///…/x.mnd?note=file:///…`): the collection and the file; `hand_asked`: its opening was asked for once
+    hand: Option<(std::path::PathBuf, std::path::PathBuf)>, hand_asked: bool, /// the handed file's addition: when it lands the collection is saved (the place was chosen for a document)
+    hand_save: Option<u64>, /// the camera when Space went down over a canvas (unchanged at its release: a tap - the selected video plays or pauses)
     space_cam: Option<(f64, f64, f64)>,
     /// ink on a picture or a PDF's page in a note (row 325): the armed tool, the gesture under way, the stroke the pointer picked (its block, its id),
     /// and - worked out between events - the current block that can be drawn on (its frame in the window, its record) and what the toolbar shows of it
@@ -281,7 +283,8 @@ enum Ask {
 #[derive(Clone, Debug, PartialEq)]
 enum Pending { Quit, Close, Open(std::path::PathBuf), /// a minNotes 2 document's pages into a new, untitled collection (row 377)
     ImportOld(std::path::PathBuf), /// a new collection with no document yet (row 368)
-    Untitled }
+    Untitled, /// a collection opened where it is, or made there when nothing is (QCView's Export to minNotes hands such a place over)
+    Make(std::path::PathBuf) }
 
 struct App { /// the handle is held (row 305): where it was pressed, whether the pointer has moved far enough to be a drag, and where the blocks would land
     drawn: bool, /// frames still owed after the first: a frame presented before the window is on screen is not shown, and nothing else asks for another until the pointer moves (the user 2026-11-11)
@@ -958,6 +961,7 @@ impl App {
             Some(Pending::Close) => self.end_session(),
             Some(Pending::Open(p)) => { self.end_session(); self.open_collection(&p, false); }
             Some(Pending::ImportOld(p)) => { self.end_session(); self.open_untitled(None); self.files.old_fresh = self.store.as_ref().map(|st| st.note); self.import_old_start(p); }
+            Some(Pending::Make(p)) => { self.end_session(); let new = !p.is_file(); self.open_collection(&p, new); }
             Some(Pending::Untitled) => { self.end_session(); self.open_untitled(None); }   // a new collection has no document yet (row 368): it is staged until its first save
         }
         self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
@@ -1200,14 +1204,43 @@ impl App {
         let Some(w) = self.files.gather.take() else { return }; if let Some(r) = &w.run { r.stop.store(true, std::sync::atomic::Ordering::Relaxed); }
         if let Some(snap) = &w.snap { let _ = std::fs::remove_file(snap.with_extension("out")); for ext in ["", "-wal", "-shm"] { let _ = std::fs::remove_file(format!("{}{ext}", snap.display())); } }
     }
+    /// A collection handed over with a file (QCView's Export to minNotes): the collection is opened - made, when nothing is
+    /// at that place - by the way every collection is opened (the question about what is not saved first), and then a note
+    /// is made of the file in it. Given up when the opening is cancelled or refused.
+    fn hand_tick(&mut self) {
+        let Some((col, media)) = self.files.hand.clone() else { return };
+        if self.gpu.is_none() || self.modal() || self.after_close.is_some() { return }
+        if self.store.as_ref().and_then(|st| st.session.as_ref()).is_some_and(|se| se.original() == col) { self.files.hand = None; self.files.hand_asked = false; self.hand_note(media); return }
+        if self.files.hand_asked { self.files.hand = None; self.files.hand_asked = false; return }
+        self.files.hand_asked = true; self.request_close(Pending::Make(col));
+    }
+    /// A new note of one file: the file's name as its heading, the file under it (a video is its player), opened.
+    fn hand_note(&mut self, media: std::path::PathBuf) {
+        let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) else { return };
+        let name = media.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let made = st.col.create(None, mn_store::DocKind::Note, &name).and_then(|id| {
+            let mut d = Doc::new(); let bad = |e| mn_store::Error::Corrupt(format!("{e:?}"));
+            d.insert(None, 0, BlockId::new(), Kind::Heading { level: 1 }, name.clone()).map_err(bad)?; d.insert(None, 1, BlockId::new(), Kind::Paragraph, "").map_err(bad)?;
+            st.col.save_note(id, &d).map(|_| id) });
+        let id = match made { Ok(id) => id, Err(e) => { eprintln!("hand-over: {e}"); self.notice = Some(("A note could not be made for the file".into(), Instant::now() + std::time::Duration::from_secs(6))); return } };
+        st.unpublished = true; st.edited_since_stage = true; sb.set_tree(&st.col); sb.selected = Some(id); sb.focused = false; self.changed.insert(id);
+        self.notice = Some((format!("Made a note of {name}"), Instant::now() + std::time::Duration::from_secs(6)));
+        println!("hand-over: a note of {name}");
+        self.reading = false;   // the note was asked for: it is written into
+        self.open_note(id);
+        self.add_files(vec![media], mn_edit::Drop { parent: None, index: 1, depth: None, beside: None });
+        self.files.hand_save = Some(self.files.token);
+    }
     /// A document the system handed over (row 352): a collection or a package is opened as File > Open opens it (the
     /// question about what is not saved first); a `minnotes:///path/to/file.mnd` address names such a file. Anything
     /// else is said to be no document of ours.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     fn os_open(&mut self, item: &str) {
-        let path: Option<std::path::PathBuf> = match item.strip_prefix("minnotes:") { Some(rest) => min_paths::url::file_url_to_path(&format!("file:{rest}")).map(Into::into), None => Some(item.into()) };
+        let (path, note) = handed(item);
         let ours = |p: &std::path::Path| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("mnd") || x.eq_ignore_ascii_case(gather::PACKAGE));
         println!("handed over: {item}");
+        // a collection handed over WITH a file: a note is made of the file in it (QCView's Export to minNotes) - `hand_tick`
+        if let (Some(p), Some(n)) = (path.as_ref().filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("mnd"))), note) { self.files.hand = Some((p.clone(), n)); self.files.hand_asked = false; if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         // (scripted, MN_OPEN_LOG=<file>: what was handed over is written there at once - a windowed run's output is held back)
         if let Some(f) = std::env::var_os("MN_OPEN_LOG") { use std::io::Write; if let Ok(mut o) = std::fs::OpenOptions::new().create(true).append(true).open(f) { let _ = writeln!(o, "handed over: {item}"); } }
         match path.filter(|p| ours(p)) {
@@ -1858,6 +1891,7 @@ impl App {
                 if at.index == usize::MAX { if let Some(cv) = self.files.canvas.as_mut() { cv.add_media(records, self.files.canvas_at.take()); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                 let kinds = records.into_iter().map(|descriptor| Kind::Media { descriptor }).collect();
                 match self.ed.insert_blocks(&at, kinds, now) { Ok(d) => { self.follow = true; self.apply(d) } Err(e) => eprintln!("drop: {e:?}") }
+                if self.files.hand_save == Some(token) { self.files.hand_save = None; self.save(); }
             }
             // a picture named by an address has arrived: the blocks that name it point at the kept copy instead. Not a
             // step of the history (nobody did it); a redo that brings the address back is answered the same way
@@ -3594,6 +3628,7 @@ impl ApplicationHandler for App {
         if self.gpu.is_some() { if let Some((p, why)) = self.files.open_failed.take() { self.open_refused(&p, &why); if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
         // what the system handed over (a double click on a document, a `minnotes:` address): row 352
         #[cfg(target_os = "macos")] for item in mac_open::take() { self.os_open(&item); }
+        self.hand_tick();
         // the updater starts with the first window (not in a scripted run: it asks the feed)
         #[cfg(target_os = "macos")] if self.gpu.is_some() && !self.files.updater_tried { self.files.updater_tried = true; if std::env::var_os("MN_NO_DIALOGS").is_none() { sparkle::start(); } } if self.files.side_media.is_some() || self.files.import_parent.is_some() { self.side_media_tick(); }
         if self.files.gather.is_some() { let out = self.files.gather.as_mut().map(|w| w.tick()).unwrap_or(gather_win::Out::None); self.gather_out(out); }
@@ -3980,6 +4015,14 @@ impl ApplicationHandler for App {
 /// Opens a collection through a staged session (rows 272, 288): the store, the note to show, and whether work from an
 /// earlier session was found and taken up. `create`: nothing is at the path yet and a new collection starts there.
 /// A collection with no document yet (row 368): a new one, or the one an earlier run left unsaved (taken up again).
+/// What was handed over: a path, or a `minnotes:` address (a file URL with the scheme swapped) - its collection, and for
+/// `…?note=<file URL>` the file a new note is to be made of.
+fn handed(item: &str) -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>) {
+    let Some(rest) = item.strip_prefix("minnotes:") else { return (Some(item.into()), None) };
+    let (body, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let note = query.split('&').find_map(|kv| kv.strip_prefix("note=")).and_then(min_paths::url::file_url_to_path).map(std::path::PathBuf::from);
+    (min_paths::url::file_url_to_path(&format!("file:{body}")).map(Into::into), note)
+}
 fn open_untitled(left: Option<mn_store::staging::Leftover>) -> Result<(Store, Doc, bool), String> {
     use mn_store::staging; let root = sessions_root(); std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     let session = match &left { Some(l) => staging::Session::resume(l), None => staging::Session::untitled(&root) }.map_err(|e| e.to_string())?;
@@ -4222,6 +4265,10 @@ fn main() {
     }
     let options_with_value = ["--v2", "--make-v2-sample", "--text", "--seconds", "--shot", "--scroll", "--note", "--make-sample", "--shots", "--shots-out"];
     let file = args.iter().enumerate().skip(1).find(|(i, a)| !a.starts_with("--") && !options_with_value.contains(&args[i - 1].as_str()) && !(args.get(i.wrapping_sub(2)).is_some_and(|x| x == "--v2"))).map(|(_, a)| std::path::PathBuf::from(a));
+    // an address on the command line (Windows starts the protocol's program with it): its collection is the file; with a
+    // file to make a note of, nothing is opened here - the window does it once it is up (`hand_tick`)
+    let mut hand = None;
+    let file = match file { Some(f) if f.to_string_lossy().starts_with("minnotes:") => { let (p, note) = handed(&f.to_string_lossy()); match (p, note) { (Some(p), Some(n)) => { hand = Some((p, n)); None } (p, _) => p } } f => f };
     let mut store = None; let mut recovered = false; let mut open_failed = None;
     let opened = file.map(|path| {
         // (a file that does not open no longer ends the application: a double-clicked minNotes 2 document is how its users first meet this one - the window comes up and says so, row 377)
@@ -4252,7 +4299,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let mut app = App { reading: store.as_ref().is_some_and(|st| reading_at_open(&st.session.as_ref().map(|s| s.original().to_path_buf()).unwrap_or_default(), args.iter().any(|a| a == "--new"))), refused_seen: 0, menubar: menu::InWindowMenu::wanted().then(menu::InWindowMenu::new), alt_clean: false, guide: None, guide_stash: None, reading_user: false, guide_tried: false, pinned: std::env::var_os("MN_NO_DIALOGS").is_none() && sessions_root().parent().is_some_and(|d| d.join("always-on-top").is_file()), guide_on: std::env::var("MN_GUIDE_ON").is_ok_and(|v| v == "1"), shots: arg("--shots").and_then(|p| shots::Shots::load(&p, arg("--shots-out"))), player: None, hw: None, poster: video::Poster::default(), files: Files::default(), media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let mut app = App { reading: store.as_ref().is_some_and(|st| reading_at_open(&st.session.as_ref().map(|s| s.original().to_path_buf()).unwrap_or_default(), args.iter().any(|a| a == "--new"))), refused_seen: 0, menubar: menu::InWindowMenu::wanted().then(menu::InWindowMenu::new), alt_clean: false, guide: None, guide_stash: None, reading_user: false, guide_tried: false, pinned: std::env::var_os("MN_NO_DIALOGS").is_none() && sessions_root().parent().is_some_and(|d| d.join("always-on-top").is_file()), guide_on: std::env::var("MN_GUIDE_ON").is_ok_and(|v| v == "1"), shots: arg("--shots").and_then(|p| shots::Shots::load(&p, arg("--shots-out"))), player: None, hw: None, poster: video::Poster::default(), files: Files { hand, ..Default::default() }, media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     startup_log("arguments read, collection opened (if any)");
     let el = EventLoop::new().unwrap();
     #[cfg(target_os = "macos")] mac_open::install();

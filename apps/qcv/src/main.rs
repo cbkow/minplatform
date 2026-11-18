@@ -603,6 +603,19 @@ impl App {
                 let sent = self.annot.dir().filter(|_| self.live.is_some()).and_then(|d| min_paths::links::minnotes_link(&d.to_string_lossy())).is_some_and(|u| match os_actions::open_url(&u) { Ok(()) => true, Err(e) => { log::warn!("minNotes: {e}"); false } });
                 if !sent { self.toast(&min_i18n::trc("qcv::WindowManager", "minNotes is not installed"), min_ui::ToastKind::Negative); }
             }
+            N::ExportToMinNotes => {
+                // the place for the document is asked here; minNotes opens it (or makes it) and makes a note of the clip: its
+                // name as the heading, the video under it (the address: minnotes:///…/x.mnd?note=file:///…)
+                let media = std::path::PathBuf::from(&self.source_path);
+                if self.source_path.is_empty() || self.source_path.contains("://") || !media.is_file() { self.toast(&min_i18n::trc("NotesPanel", "Export to minNotes needs a clip that is a file"), min_ui::ToastKind::Notice); return }
+                let mut dlg = rfd::FileDialog::new().set_title(min_i18n::trc("NotesPanel", "Export to minNotes…").trim_end_matches('…')).add_filter("minNotes", &["mnd"]).set_file_name(format!("{}.mnd", media.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()));
+                if let Some(d) = media.parent() { dlg = dlg.set_directory(d); }
+                let Some(to) = dlg.save_file() else { return };
+                let to = if to.extension().is_some_and(|x| x.eq_ignore_ascii_case("mnd")) { to } else { to.with_extension("mnd") };
+                let link = min_paths::links::minnotes_link(&to.to_string_lossy()).zip(min_paths::url::path_to_file_url(&self.source_path)).map(|(l, m)| format!("{l}?note={m}"));
+                let sent = link.is_some_and(|u| match os_actions::open_url(&u) { Ok(()) => true, Err(e) => { log::warn!("minNotes: {e}"); false } });
+                if !sent { self.toast(&min_i18n::trc("qcv::WindowManager", "minNotes is not installed"), min_ui::ToastKind::Negative); }
+            }
             N::AddNote => {
                 // a live item: the note goes on a frozen frame (QCView `ensureFrozenForNote`); Add on a saved note's Review is a no-op
                 if self.live.as_ref().is_some_and(|l| l.review.is_none()) { self.freeze_live(); }

@@ -4602,3 +4602,13 @@ msgstr "h264/h265 硬件搓擦"
 msgctxt "LeftRail"
 msgid "GPU decode (Vulkan/D3D12VA) when available. Turn off if playback misbehaves — forces software decode everywhere. Applies on next file load."
 msgstr "可用时使用 GPU 解码 (Vulkan/D3D12VA)。播放异常时请关闭——将全部强制为软件解码。下次加载文件时生效。"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Export to minNotes…"
+msgstr "导出到 minNotes…"
+
+#. drafted 2026-11-18, unreviewed
+msgctxt "NotesPanel"
+msgid "Export to minNotes needs a clip that is a file"
+msgstr "导出到 minNotes 需要一个文件形式的片段"

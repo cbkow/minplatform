@@ -10,6 +10,7 @@ license = "GPL-3.0-or-later"
 description = "minNotes — the collection file: staging, save, the base copy (canon rows 272, 283)"
 
 [dependencies]
+min-paths = { path = "../min-paths" }
 mn-doc = { path = "../mn-doc" }
 uuid = { workspace = true }
 rusqlite = { workspace = true }
