@@ -42,7 +42,7 @@ impl Videos for Ffmpeg {
         let i = &s.info; if i.width == 0 || i.height == 0 { return Err("The file has no picture".into()) }
         let ours = !matches!(i.meta.transfer, T::Srgb | T::Bt1886);
         if ours && self.gpu.is_none() { return Err("An HDR or linear picture needs the graphics card: stills only".into()) }
-        let (w, h) = (i.width, i.height);
+        let (w, h) = if matches!(i.meta.rotation, 90 | 270) { (i.height, i.width) } else { (i.width, i.height) };   // the size as shown
         self.known.insert(path.to_path_buf(), Known { w, h, rate: i.frame_rate, meta: i.meta, ours });
         let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
         let copy = !ours && matches!(ext.as_str(), "mp4" | "m4v") && i.codec_short.eq_ignore_ascii_case("h264") && matches!(i.pix_fmt.as_str(), "yuv420p" | "yuvj420p") && w.max(h) <= LONGEST;
@@ -55,7 +55,7 @@ impl Videos for Ffmpeg {
         // a file that plays as it is keeps its picture and sound untouched; it is written anew only to start at once
         // from a server and to carry no turn (see below)
         if clip.copy {
-            let o = Command::new(&program).args(["-nostdin", "-y", "-hide_banner", "-loglevel", "error", "-display_rotation", "0", "-i"]).arg(path).args(["-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-movflags", "+faststart", "-f", "mp4"]).arg(out).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().map_err(|e| format!("FFmpeg could not be started ({e})"))?;
+            let o = Command::new(&program).args(["-nostdin", "-y", "-hide_banner", "-loglevel", "error", "-i"]).arg(path).args(["-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-movflags", "+faststart", "-f", "mp4"]).arg(out).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().map_err(|e| format!("FFmpeg could not be started ({e})"))?;
             if o.status.success() { return Ok(()) }
             return std::fs::copy(path, out).map(|_| ()).map_err(|e| format!("The video could not be copied ({e})"))
         }
@@ -68,13 +68,13 @@ impl Videos for Ffmpeg {
         if let Some(k) = known.filter(|k| k.ours) {
             let mut reader = qcv_player::thumbnail_cache::FrameReader::open(&path.to_string_lossy()).ok_or("The file could not be read frame by frame")?;
             let first = reader.next_frame(LONGEST).ok_or("The file has no frame that can be read")?;
-            c.args(["-y", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s"]).arg(format!("{}x{}", first.width, first.height)).args(["-r"]).arg(format!("{}/{}", k.rate.0.max(1), k.rate.1.max(1))).args(["-i", "pipe:0", "-i"]).arg(path)
+            c.args(["-y", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s"]).arg({ let (fw, fh) = if matches!(k.meta.rotation, 90 | 270) { (first.height, first.width) } else { (first.width, first.height) }; format!("{fw}x{fh}") }).args(["-r"]).arg(format!("{}/{}", k.rate.0.max(1), k.rate.1.max(1))).args(["-i", "pipe:0", "-i"]).arg(path)
                 .args(["-map", "0:v:0", "-map", "1:a:0?", "-vf"]).arg(format!("scale={w}:{h}:flags=bicubic:out_color_matrix=bt709:out_range=tv,format=yuv420p")).args(["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]);
             ours = Some((reader, first, k));
         } else {
-            // (a file stored turned - a phone's - is NOT turned upright: the application shows a file's frames as they are stored, its
-            // stills and the drawings on them are in that sheet, and the copy must match them; the file's turn is set to none)
-            c.args(["-nostdin", "-y", "-hide_banner", "-loglevel", "error", "-display_rotation", "0", "-i"]).arg(path).args(["-map", "0:v:0", "-map", "0:a:0?", "-vf"]).arg(format!("scale={w}:{h}:flags=bicubic,format=yuv420p"));
+            // (a file stored turned - a phone's - is turned upright by FFmpeg, as the application shows it since row 575: its
+            // stills and the drawings on them are in that upright sheet; `w` x `h` is the size as shown)
+            c.args(["-nostdin", "-y", "-hide_banner", "-loglevel", "error", "-i"]).arg(path).args(["-map", "0:v:0", "-map", "0:a:0?", "-vf"]).arg(format!("scale={w}:{h}:flags=bicubic,format=yuv420p"));
         }
         if cfg!(target_os = "macos") { c.args(["-c:v", "h264_videotoolbox", "-allow_sw", "1", "-b:v"]).arg(rate.to_string()).args(["-maxrate"]).arg((rate * 3 / 2).to_string()).args(["-profile:v", "high"]); }
         else { c.args(["-c:v", "libx264", "-preset", "medium", "-b:v"]).arg(rate.to_string()).args(["-maxrate"]).arg((rate * 3 / 2).to_string()).args(["-bufsize"]).arg((rate * 2).to_string()); }
@@ -88,7 +88,8 @@ impl Videos for Ffmpeg {
             return min_transcode::run_fed(c, stop, &mut |w| {
                 let Some(px) = next.take() else { return Ok(false) };
                 let Some((rgb, fw, fh)) = poster.sdr_rgb(gpu.map(|g| (&g.0, &g.1)), &px, &k.meta) else { return Err("The colour stage could not show a frame") };
-                if (fw, fh) != (px.width, px.height) { return Err("The colour stage gave a frame of another size") }
+                let want = if matches!(k.meta.rotation, 90 | 270) { (px.height, px.width) } else { (px.width, px.height) };   // the stage turns a frame stored on its side
+                if (fw, fh) != want { return Err("The colour stage gave a frame of another size") }
                 if w.write_all(&rgb).is_err() { return Ok(false) }   // FFmpeg ended: what it said is the reason
                 n += 1; if n % 4 == 0 { done(n as f32 / frames as f32); }
                 next = reader.next_frame(LONGEST); Ok(true)

@@ -13,13 +13,15 @@ use std::path::Path;
 pub const EXTENSIONS: &[&str] = &["mov", "mp4", "m4v", "mxf", "mkv", "avi", "webm", "ts", "mts", "m2ts", "m2t", "mpg", "mpeg", "mpe", "m2v", "vob", "3gp", "3g2", "wmv", "asf", "flv", "f4v", "ogv", "ogm", "mjpeg", "mjpg", "y4m", "dv", "mj2"];
 pub fn is_video(path: &Path) -> bool { path.extension().and_then(|e| e.to_str()).is_some_and(|e| EXTENSIONS.contains(&e.to_ascii_lowercase().as_str())) }
 
-/// What a video file's headers say (the Qt app's record: the coded size, no rotation applied).
+/// What a video file's headers say. The size is the picture's AS SHOWN: a clip stored on its side (a phone's) is given
+/// turned, as the player and the stills show it (row 575; until then the coded size, the Qt app's record).
 pub struct Probe { pub w: u32, pub h: u32, pub frames: i32, pub fps: f64, pub dur_ms: f64, pub meta: ColorMeta }
 pub fn probe(path: &Path) -> Result<Probe, String> {
     let s = qcv_player::Session::open(&path.to_string_lossy(), &qcv_player::OpenOptions { threads: 1, hw: None, hw_intra: None, seq: None, fast: true, live: None }).map_err(|e| e.to_string())?;
     let i = &s.info; if i.width == 0 || i.height == 0 { return Err("the file has no picture".into()) }
     let fps = i.rate().as_f64();
-    Ok(Probe { w: i.width, h: i.height, frames: i.frame_count.max(1), fps, dur_ms: (i.duration_secs * 1000.0).round().max(0.0), meta: i.meta })
+    let (w, h) = if matches!(i.meta.rotation, 90 | 270) { (i.height, i.width) } else { (i.width, i.height) };
+    Ok(Probe { w, h, frames: i.frame_count.max(1), fps, dur_ms: (i.duration_secs * 1000.0).round().max(0.0), meta: i.meta })
 }
 /// A frame of the file as R'G'B' code values, its longer side about `max`, with the clip's colour tags.
 pub fn still(path: &Path, frame: i32, max: u32) -> Result<(ThumbPixels, ColorMeta), String> {

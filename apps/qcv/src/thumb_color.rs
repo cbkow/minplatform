@@ -33,7 +33,7 @@ impl ThumbColor {
             for (pl, c) in [(0usize, 1usize), (1, 2), (2, 0)] { planes[pl][o..o + 2].copy_from_slice(&data[i + c].to_ne_bytes()); }
         } }
         let meta = self.meta.unwrap_or_default();
-        let m = min_present::ColorMeta { matrix: min_present::Matrix::Identity, range: min_present::Range::Full, chroma: min_present::Chroma::Rgb, bit_depth: 16, rotation: 0, sar: (1, 1), range_forced: false, ..meta };
+        let m = min_present::ColorMeta { matrix: min_present::Matrix::Identity, range: min_present::Range::Full, chroma: min_present::Chroma::Rgb, bit_depth: 16, sar: (1, 1), range_forced: false, ..meta };   // (the file's own turn stays, as in the viewport - row 575)
         let [g, b, r] = planes;
         let frame = Frame { width: w, height: h, pixels: Pixels::Planar { planes: vec![Plane::owned(g, w, h, pitch), Plane::owned(b, w, h, pitch), Plane::owned(r, w, h, pitch)], layout: PlanarLayout::Rgb { bytes_per_sample: 2, code_bits: 16, float, alpha: false, legal_expand: false } }, meta: m };
         en.show(&frame).ok()?;

@@ -179,7 +179,7 @@ struct Unpack { rx: std::sync::mpsc::Receiver<(u64, Option<Result<std::path::Pat
 struct PdfSel { id: BlockId, a: usize, b: usize, drag: bool }
 #[derive(Default)]
 struct Files { /// handed over with a file to make a note of (`minnotes:///…/x.mnd?note=file:///…`): the collection and the file; `hand_asked`: its opening was asked for once
-    hand: Option<(std::path::PathBuf, std::path::PathBuf)>, hand_asked: bool, /// the handed file's addition: when it lands the collection is saved (the place was chosen for a document)
+    finished: bool, hand: Option<(std::path::PathBuf, std::path::PathBuf)>, hand_asked: bool, /// the handed file's addition: when it lands the collection is saved (the place was chosen for a document)
     hand_save: Option<u64>, /// the camera when Space went down over a canvas (unchanged at its release: a tap - the selected video plays or pauses)
     space_cam: Option<(f64, f64, f64)>,
     /// ink on a picture or a PDF's page in a note (row 325): the armed tool, the gesture under way, the stroke the pointer picked (its block, its id),
@@ -889,11 +889,13 @@ impl App {
             SaveStep::Put(Err(e)) => {
                 let why = match &e { PutError::Io(io) if io.kind() == std::io::ErrorKind::PermissionDenied => "its folder cannot be written to".to_string(), PutError::Raced => "it keeps being saved by someone else".to_string(), other => other.to_string() };
                 eprintln!("save: {place} was NOT saved — {why}. Your changes are kept on this machine."); self.saving = None;
+                trail(&format!("save: {place} was NOT saved - {why} ({e:?})"));   // (a windowed run has no terminal: on LucidLink every save failed and the log held nothing)
                 self.save_failed(&format!("The document couldn\u{2019}t be written to its location: {why}."));
             }
             SaveStep::Fetched(Err(e)) => {
                 let why = if e.kind() == std::io::ErrorKind::NotFound { "it is no longer there — moved or deleted, or its drive or share is not connected".to_string() } else { format!("it cannot be reached ({e})") };
                 eprintln!("save: {place} was NOT saved — {why}. Nothing was written; your changes are kept on this machine."); self.saving = None;
+                trail(&format!("save: {place} was NOT saved - {why}"));
                 self.save_failed(&format!("The document was not saved: {why}. Nothing was written."));
             }
             SaveStep::Fetched(Ok(print)) => {
@@ -3283,6 +3285,9 @@ impl App {
     }
 
     fn finish(&mut self) {
+        // once: after `exit` is asked the loop still comes round until it has ended, and each round came here again - a
+        // quit wrote this line 10,639 times in 2 ms (and ran the autosave as often), found in the log 2026-11-18
+        if std::mem::replace(&mut self.files.finished, true) { return }
         trail(&format!("finish: the application is closing (quit asked: {})", self.quit));
         if let Some(t0) = *SPIN_T0.lock().unwrap() { let n = SPUN.load(std::sync::atomic::Ordering::Relaxed).saturating_sub(30); let s = t0.elapsed().as_secs_f64(); println!("spin: {n} frames in {s:.2} s = {:.1} per second ({} elements)", n as f64 / s, self.files.canvas.as_ref().map(|c| c.els.len()).unwrap_or(0)); }
         self.autosave();

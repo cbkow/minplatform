@@ -30,7 +30,7 @@ impl Poster {
         let mut planes = [vec![0u8; (pitch * h) as usize], vec![0u8; (pitch * h) as usize], vec![0u8; (pitch * h) as usize]];
         for y in 0..h { for x in 0..w { let i = ((y * w + x) * 3) as usize; let o = (y * pitch + x * 2) as usize;
             for (pl, c) in [(0usize, 1usize), (1, 2), (2, 0)] { planes[pl][o..o + 2].copy_from_slice(&data[i + c].to_ne_bytes()); } } }
-        let m = ColorMeta { matrix: min_present::Matrix::Identity, range: min_present::Range::Full, chroma: min_present::Chroma::Rgb, bit_depth: 16, rotation: 0, sar: (1, 1), range_forced: false, ..*meta };
+        let m = ColorMeta { matrix: min_present::Matrix::Identity, range: min_present::Range::Full, chroma: min_present::Chroma::Rgb, bit_depth: 16, sar: (1, 1), range_forced: false, ..*meta };   // (the file's own turn stays: a phone's clip is shown upright, as the players show it - row 575; it was set to none here)
         let [g, b, r] = planes;
         let frame = Frame { width: w, height: h, pixels: Pixels::Planar { planes: vec![Plane::owned(g, w, h, pitch), Plane::owned(b, w, h, pitch), Plane::owned(r, w, h, pitch)], layout: PlanarLayout::Rgb { bytes_per_sample: 2, code_bits: 16, float, alpha: false, legal_expand: false } }, meta: m };
         en.show(&frame).ok()?;
