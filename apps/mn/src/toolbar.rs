@@ -88,15 +88,15 @@ impl Toolbar {
         // its width; and, apart at the right end, what is done WITH the note - addressed, delete
         let video: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawPath, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase, NoteText], vec![PtSelect, PtAdd, PtRemove, PtConvert], vec![PenColor, PenThinner, PenThicker], vec![NoteDone, NoteDelete]];
         // a canvas's set (row 324): the pointer and the drawing tools with the Qt app's keys, how a line looks, what is put on the sheet
-        let canvas: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase], vec![PenColor, PenThinner, PenThicker], vec![Frame, Image, File]];
+        let canvas: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawPath, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase], vec![PenColor, PenThinner, PenThicker], vec![Frame, Image, File]];
         let mut cgroups = make(&canvas);
-        for (b, tip) in cgroups[0].buttons.iter_mut().zip(["Select and move (V, or Esc)", "Pen (P) \u{2014} a tablet's pressure varies the line", "Line (L)", "Arrow (A)", "Rectangle (R)", "Oval (O)", "Eraser (E) \u{2014} rubs out what it passes over"]) { b.tooltip = tip.to_string(); }
+        for (b, tip) in cgroups[0].buttons.iter_mut().zip(["Select and move (V, or Esc)", "Pen (P) \u{2014} a tablet's pressure varies the line", "Pen path \u{2014} click for corners, drag for curves (Enter ends it, its first point closes it)", "Line (L)", "Arrow (A)", "Rectangle (R)", "Oval (O)", "Eraser (E) \u{2014} rubs out what it passes over"]) { b.tooltip = tip.to_string(); }
         for (b, tip) in cgroups[1].buttons.iter_mut().zip(["Pen colour \u{2014} or the selected ink's", "Thinner line", "Thicker line"]) { b.tooltip = tip.to_string(); }
         for (b, tip) in cgroups[2].buttons.iter_mut().zip(["Frame (F) \u{2014} click for one that hugs what is put in it, drag for one with a size of its own", "Add pictures, videos or PDFs", "Add files"]) { b.tooltip = tip.to_string(); }
         // a picture's or a PDF page's set (row 325): the same tools, and a pointer that picks what was drawn
-        let page: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase], vec![PenColor, PenThinner, PenThicker]];
+        let page: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawPath, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase], vec![PenColor, PenThinner, PenThicker]];
         let mut pgroups = make(&page);
-        for (b, tip) in pgroups[0].buttons.iter_mut().zip(["Pick a stroke (V) \u{2014} drag to move it, Delete to remove it; again to stop", "Pen (P) \u{2014} draws on the picture or the page; again to stop", "Line (L)", "Arrow (A)", "Rectangle (R)", "Oval (O)", "Eraser (E) \u{2014} rubs out what it passes over"]) { b.tooltip = tip.to_string(); }
+        for (b, tip) in pgroups[0].buttons.iter_mut().zip(["Pick a stroke (V) \u{2014} drag to move it, Delete to remove it; again to stop", "Pen (P) \u{2014} draws on the picture or the page; again to stop", "Pen path \u{2014} click for corners, drag for curves (Enter ends it, its first point closes it)", "Line (L)", "Arrow (A)", "Rectangle (R)", "Oval (O)", "Eraser (E) \u{2014} rubs out what it passes over"]) { b.tooltip = tip.to_string(); }
         for (b, tip) in pgroups[1].buttons.iter_mut().zip(["Pen colour \u{2014} or the picked stroke's", "Thinner line", "Thicker line"]) { b.tooltip = tip.to_string(); }
         Toolbar { sets: [Default::default(), (make(&video), video.clone(), 3), (cgroups, canvas.clone(), 3), (pgroups, page.clone(), 2)], cur: 0, video: None, ink: None, groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, reading: false, scale: 1.0, chips: [None, None] }
     }

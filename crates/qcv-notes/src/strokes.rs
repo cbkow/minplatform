@@ -39,6 +39,14 @@ impl PenPath {
         if out.len() == 1 { out.push(out[0]); }
         out
     }
+    /// The same for a path whose points are NOT fractions of a picture but a surface's own units (minNotes' pages and
+    /// sheets): flattened to `tol` of those units.
+    pub fn flatten_in(&self, tol: f64) -> Vec<[f64; 2]> {
+        let mut out = vec![];
+        kurbo::flatten(self.bez(|p| kurbo::Point::new(p[0], p[1])), tol.max(1e-6) * 0.1, |el| if let kurbo::PathEl::MoveTo(p) | kurbo::PathEl::LineTo(p) = el { out.push([p.x, p.y]) });
+        if out.len() == 1 { out.push(out[0]); }
+        out
+    }
     /// Every point and handle through `f` (a move, a scale).
     pub fn map(&mut self, f: impl Fn([f64; 2]) -> [f64; 2]) { for a in &mut self.anchors { a.p = f(a.p); a.hin = f(a.hin); a.hout = f(a.hout); } }
     fn to_json(&self) -> Value { json!({ "closed": self.closed, "anchors": self.anchors.iter().map(|a| Value::Array([a.p[0], a.p[1], a.hin[0], a.hin[1], a.hout[0], a.hout[1]].iter().map(|v| num(*v)).collect())).collect::<Vec<_>>() }) }

@@ -106,7 +106,8 @@ pub fn page_paint(scene: &mut vello::Scene, id: mn_doc::BlockId, descriptor: &st
 
 /// The drawing tools (row 324). On a canvas none of them armed means the pointer selects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Ink { Pen, Line, Arrow, Rect, Oval, Eraser }
+pub enum Ink { Pen, /// the pen's path of anchors and handles (row 579): click by click, kept by [`PathLive`] between the presses
+    Path, Line, Arrow, Rect, Oval, Eraser }
 /// What is armed over a PDF's page or a picture in a note: the pointer that picks strokes, or a drawing tool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick { Select, Draw(Ink) }
@@ -127,7 +128,7 @@ pub fn line_of(tool: Ink, from: Point, to: Point, pen: Option<Vec<[f64; 2]>>, ma
         Ink::Line | Ink::Arrow => { if small { return None } (if tool == Ink::Line { Tool::Line } else { Tool::Arrow }, vec![[from.x, from.y], [to.x, to.y]], None) }
         Ink::Rect => { if small { return None } (Tool::Rectangle, vec![[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]], None) }
         Ink::Oval => { if small { return None } (Tool::Oval, vec![[r.center().x, r.center().y], [r.width() / 2.0, r.height() / 2.0]], None) }
-        Ink::Eraser => return None,
+        Ink::Eraser | Ink::Path => return None,
     };
     Some(Line { s: Stroke { id: strokes::new_id(), tool: kind, color: Stroke::qcolor(color), width, filled: false, is_modeled: kind == Tool::Freehand, points, path: None }, pressures: z })
 }
@@ -139,6 +140,40 @@ pub fn settled(mut l: Line, keep: f64) -> Line {
     l
 }
 
+/// A path the pen has under way on a page or a sheet, in that surface's units (row 579; the gestures are QCView's, row
+/// 566): a press sets an anchor - on the first anchor it asks for the close -, a drag pulls the new anchor's handles out
+/// in line (Alt: the leaving one alone), the release ends the drag (true: the path closes now). It lives between the
+/// presses; Enter, Escape, the other button or another tool end it open.
+pub struct PathLive { pub anchors: Vec<qcv_notes::strokes::Anchor>, pub down: bool, press: Point, pub hover: Point, closing: bool }
+impl PathLive {
+    pub fn begin(p: Point) -> PathLive { PathLive { anchors: vec![qcv_notes::strokes::Anchor::corner([p.x, p.y])], down: true, press: p, hover: p, closing: false } }
+    /// `near`: how close to the first anchor a press closes the path.
+    pub fn press(&mut self, p: Point, near: f64) {
+        self.down = true; self.press = p; self.hover = p;
+        let f = self.anchors[0].p; if self.anchors.len() >= 2 && (Point::new(f[0], f[1]) - p).hypot() <= near { self.closing = true; } else { self.anchors.push(qcv_notes::strokes::Anchor::corner([p.x, p.y])); }
+    }
+    pub fn moved(&mut self, p: Point, alt: bool, slack: f64) {
+        self.hover = p; if !self.down || (p - self.press).hypot() <= slack { return }
+        if self.closing { let a = &mut self.anchors[0]; a.hin = [2.0 * a.p[0] - p.x, 2.0 * a.p[1] - p.y]; }
+        else if let Some(a) = self.anchors.last_mut() { a.hout = [p.x, p.y]; if !alt { a.hin = [2.0 * a.p[0] - p.x, 2.0 * a.p[1] - p.y]; } }
+    }
+    /// True: the press was on the first anchor - the path is closed and done.
+    pub fn release(&mut self) -> bool { self.down = false; self.closing }
+    /// The path as a line (two anchors make one), open or closed.
+    pub fn line(&self, closed: bool, color: [f32; 4], width: f64) -> Option<Line> {
+        if self.anchors.len() < 2 { return None }
+        let path = qcv_notes::strokes::PenPath { anchors: self.anchors.clone(), closed };
+        Some(Line { s: Stroke { id: strokes::new_id(), tool: Tool::Freehand, color: Stroke::qcolor(color), width, filled: false, is_modeled: true, points: path.flatten_in(1.0), path: Some(path) }, pressures: None })
+    }
+    /// The aids on screen: the piece the next click would add, each anchor, the handles that stand off them. `at`: the
+    /// surface's units to the window's.
+    pub fn paint(&self, scene: &mut vello::Scene, at: kurbo::Affine) {
+        let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff); let white = peniko::Color::from_rgba8(0xff, 0xff, 0xff, 0xff); let p = |q: [f64; 2]| at * Point::new(q[0], q[1]);
+        if let (false, Some(l)) = (self.down, self.anchors.last()) { let mut b = BezPath::new(); b.move_to(p(l.p)); b.curve_to(p(l.hout), at * self.hover, at * self.hover); scene.stroke(&kurbo::Stroke::new(1.0), kurbo::Affine::IDENTITY, blue, None, &b); }
+        for a in &self.anchors { for h in [a.hin, a.hout] { if h != a.p { scene.stroke(&kurbo::Stroke::new(1.0), kurbo::Affine::IDENTITY, blue, None, &kurbo::Line::new(p(a.p), p(h))); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, blue, None, &kurbo::Circle::new(p(h), 3.5)); } } }
+        for (i, a) in self.anchors.iter().enumerate() { let r = Rect::from_center_size(p(a.p), (7.0, 7.0)); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, if i + 1 == self.anchors.len() { blue } else { white }, None, &r); scene.stroke(&kurbo::Stroke::new(1.0), kurbo::Affine::IDENTITY, blue, None, &r); }
+    }
+}
 enum Doing { Draw { tool: Ink, from: Point, to: Point, sm: Option<qcv_notes::ink::Smoother>, marks: Vec<(usize, f64)>, pressed: bool }, Rub { last: Point }, Move { id: String, last: Point }, Idle }
 /// A gesture on a page of a note's block, from the press to the release, in the page's units. The page's strokes as the
 /// gesture has them now are `lines`; the record as it was at the press is `before` (the whole gesture is ONE step).
