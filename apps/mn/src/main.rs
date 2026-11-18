@@ -2926,6 +2926,7 @@ impl App {
         let step = if shift { 10.0 } else { 1.0 };
         let done = match key {
             Key::Named(NamedKey::Escape) => { cv.escape(); true }
+            Key::Named(NamedKey::Enter) if cv.path.is_some() => { cv.path_end(false); true }   // the pen's path ends as it stands
             Key::Named(NamedKey::Enter) => { cv.enter(&mut g.fonts); true }
             Key::Named(NamedKey::Backspace | NamedKey::Delete) => { cv.delete(); true }
             // Option + Left / Right: the selected PDF card's page before / after
@@ -3833,7 +3834,7 @@ impl ApplicationHandler for App {
                     let paths: Vec<std::path::PathBuf> = uris.iter().filter_map(|u| if u.starts_with("file:") { min_paths::url::file_url_to_path(u) } else if u.contains("://") { None } else { Some(u.to_string()) }).map(Into::into).collect();
                     self.add_files(paths, at); } }
             }
-            WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); if let Some(p) = self.player.as_mut() { p.ann.alt = st.alt_key(); p.ann.shift = st.shift_key(); } }
+            WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); if let Some(p) = self.player.as_mut() { p.ann.alt = st.alt_key(); p.ann.shift = st.shift_key(); } if let Some(cv) = self.files.canvas.as_mut() { cv.alt = st.alt_key(); } }
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
                 { let over = self.caption_over(position.x, position.y); if over != self.files.cap_over { self.files.cap_over = over; if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
                 // the pen between two clicks: the piece the next click would add follows the pointer
@@ -3892,6 +3893,7 @@ impl ApplicationHandler for App {
             WindowEvent::PinchGesture { delta, .. } if self.files.canvas.is_some() => { self.card_leave(); let at = self.pointer; if let Some(cv) = self.files.canvas.as_mut() { cv.zoom_by((1.0 + delta).clamp(0.5, 2.0), at); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             // the other button ends the pen's path as it stands, open (row 572) - a page's too (row 579)
             WindowEvent::PointerButton { state: ElementState::Pressed, button: ButtonSource::Mouse(MouseButton::Right), .. } if self.files.path_live.is_some() => { self.page_path_end(false); }
+            WindowEvent::PointerButton { state: ElementState::Pressed, button: ButtonSource::Mouse(MouseButton::Right), .. } if self.files.canvas.as_ref().is_some_and(|c| c.path.is_some()) => { if let Some(cv) = self.files.canvas.as_mut() { cv.path_end(false); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::PointerButton { state: ElementState::Pressed, button: ButtonSource::Mouse(MouseButton::Right), .. } if self.player.as_ref().is_some_and(|p| p.ann.pen_live()) => {
                 if let Some((_, cur)) = self.video_geo() { let c = self.player.as_mut().and_then(|p| p.ann.pen_finish(&cur)); if let Some(c) = c { self.annotated(c); } }
                 if let Some(p) = self.player.as_mut() { p.ann.escape(); } self.files.drawing = false; if let Some(g) = &self.gpu { g.window.request_redraw(); }
