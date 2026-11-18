@@ -576,6 +576,13 @@ impl Ui {
     }
     /// A link of a Links cell (row 584): an address of the web goes to the system; one of the application's own is gone to here.
     fn open_link(&mut self, link: &str) { if crate::weblink::own(link) { self.open_text(link); } else { crate::sysopen::open_url(link); } }
+    /// "New Date Folder" / "New Time Folder" (row 589, 1.4.2's): `YYMMDD` or `HHMM` by this machine's clock, made at once.
+    fn new_stamped(&mut self, time: bool) {
+        if self.dialog.is_some() || self.prefs.is_some() { return }
+        let dir = self.pane().path().to_path_buf(); let c = crate::format::local(crate::format::now_secs());
+        let base = if time { format!("{:02}{:02}", c.hour, c.minute) } else { crate::jobview::today() };
+        crate::ops::submit(self.id, crate::ops::Op::NewStamped { dir, base });
+    }
     /// "New Web Link" (row 585, 1.4.2's): the address - the clipboard's when it holds one - and a name; "New minNote" (row 587).
     fn ask_new_file(&mut self, note: bool) {
         use min_ui::{dialog::Dialog, text_button::Variant};
@@ -1581,6 +1588,7 @@ impl Ui {
             crate::ctxmenu::ENCLOSING => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; self.show_enclosing(); },
             SPLIT => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.panes[i].split_chosen(); },
             GROUP => if let Some(i) = pane.filter(|i| *i < self.shown()) { if !self.panes[i].group_chosen() { self.toast.show("These cannot be one sequence: their names differ in more than a number.", min_ui::toast::ToastKind::Notice, Instant::now()); } },
+            crate::ctxmenu::NEW_DATE | crate::ctxmenu::NEW_TIME => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.new_stamped(id == crate::ctxmenu::NEW_TIME); }
             crate::ctxmenu::NEW_LINK | crate::ctxmenu::NEW_NOTE => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.ask_new_file(id == crate::ctxmenu::NEW_NOTE); }
             REFRESH | RENAME | TRASH | NEW_FOLDER | DUPLICATE | COPY | PASTE | PREVIEW => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; }
                 self.command(match id { RENAME => Cmd::Rename, TRASH => Cmd::Trash, NEW_FOLDER => Cmd::NewFolder, DUPLICATE => Cmd::Duplicate, COPY => Cmd::Copy, PASTE => Cmd::Paste, PREVIEW => Cmd::Preview, _ => Cmd::Refresh }); }
@@ -1988,6 +1996,7 @@ impl Ui {
             "subscribe" => self.subscribe(PathBuf::from(arg), true), "unsubscribe" => self.subscribe(PathBuf::from(arg), false),
             "newjob" => { self.ask_new_job(); if let Some((d, _)) = self.dialog.as_mut() { let (n, name) = arg.split_once('|').unwrap_or((arg, "")); d.fields[0].1.set_text(n); d.fields[1].1.set_text(name); } self.dialog_preview(); if self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
             // `newlink:<address>|<name>` and `newnote:<name>` answer the question at once; `newlinkask:<address>|<name>` and `newnoteask:<name>` leave it open
+            "newdate" => self.new_stamped(false), "newtime" => self.new_stamped(true),
             "newlink" | "newlinkask" => { self.ask_new_file(false); if let Some((d, _)) = self.dialog.as_mut() { let (u, name) = arg.split_once('|').unwrap_or((arg, "")); d.fields[0].1.set_text(u); d.fields[1].1.set_text(name); } self.dialog_preview(); if word == "newlink" && self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
             "newnote" | "newnoteask" => { self.ask_new_file(true); if let Some((d, _)) = self.dialog.as_mut() { d.fields[0].1.set_text(arg); } self.dialog_preview(); if word == "newnote" && self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
             "additem" => { self.ask_add_item(); if let Some((d, _)) = self.dialog.as_mut() { d.fields[0].1.set_text(arg); } self.dialog_preview(); if self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
