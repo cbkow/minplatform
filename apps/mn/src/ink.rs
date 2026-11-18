@@ -27,6 +27,7 @@ fn line_in(shape: &Value, b: Rect) -> Option<Line> {
     let pressures = shape.get("pressures").and_then(Value::as_array).map(|a| a.iter().map(|x| x.as_f64().unwrap_or(1.0)).collect::<Vec<_>>()).filter(|p| p.len() == s.points.len());
     let oval = s.tool == Tool::Oval;
     for (i, p) in s.points.iter_mut().enumerate() { *p = if oval && i == 1 { [p[0] * b.width(), p[1] * b.height()] } else { [b.x0 + p[0] * b.width(), b.y0 + p[1] * b.height()] }; }
+    if let Some(pp) = s.path.as_mut() { pp.map(|p| [b.x0 + p[0] * b.width(), b.y0 + p[1] * b.height()]); }   // a pen path's anchors, as its points (row 579)
     Some(Line { s, pressures })
 }
 /// A line as a shape of an envelope, its points fractions of `b`.
@@ -34,6 +35,7 @@ fn shape_in(l: &Line, b: Rect) -> Value {
     let (w, h) = (b.width().max(1e-9), b.height().max(1e-9)); let cut = |x: f64| (x * 1e6).round() / 1e6;
     let mut s = l.s.clone(); let oval = s.tool == Tool::Oval;
     for (i, p) in s.points.iter_mut().enumerate() { *p = if oval && i == 1 { [cut(p[0] / w), cut(p[1] / h)] } else { [cut((p[0] - b.x0) / w), cut((p[1] - b.y0) / h)] }; }
+    if let Some(pp) = s.path.as_mut() { pp.map(|p| [cut((p[0] - b.x0) / w), cut((p[1] - b.y0) / h)]); }
     let mut shape = s.to_json();
     if let (Some(p), Some(o)) = (&l.pressures, shape.as_object_mut()) { o.insert("pressures".into(), Value::Array(p.iter().map(|x| json!((x.clamp(0.0, 1.0) * 1000.0).round() / 1000.0)).collect())); }
     shape
@@ -88,6 +90,7 @@ pub fn page_set(descriptor: &str, page: usize, size: (f64, f64), lines: &[Line])
 pub fn placed(l: &Line, k: f64, off: Vec2) -> Line {
     let mut s = l.s.clone(); let oval = s.tool == Tool::Oval; s.width *= k;
     for (i, p) in s.points.iter_mut().enumerate() { *p = if oval && i == 1 { [p[0] * k, p[1] * k] } else { [p[0] * k + off.x, p[1] * k + off.y] }; }
+    if let Some(pp) = s.path.as_mut() { pp.map(|p| [p[0] * k + off.x, p[1] * k + off.y]); }
     Line { s, pressures: l.pressures.clone() }
 }
 thread_local! { static PAGES: std::cell::RefCell<std::collections::HashMap<mn_doc::BlockId, (u64, Vec<Drawn>)>> = Default::default(); }
@@ -130,7 +133,7 @@ pub fn line_of(tool: Ink, from: Point, to: Point, pen: Option<Vec<[f64; 2]>>, ma
 }
 /// A drawn line as it is kept: a pen's with fewer points (within `keep`); a tap is a dot, as heavy as the tap was.
 pub fn settled(mut l: Line, keep: f64) -> Line {
-    if l.s.tool != Tool::Freehand || l.s.points.is_empty() { return l }
+    if l.s.tool != Tool::Freehand || l.s.points.is_empty() || l.s.path.is_some() { return l }   // (a pen path's points are its curve: they are not thinned)
     let (p, z) = reduce(&l.s.points, l.pressures.as_deref(), l.s.width, keep); l.s.points = p; l.pressures = z;
     let first = l.s.points[0]; if l.s.points.iter().all(|q| (q[0] - first[0]).hypot(q[1] - first[1]) < keep * 3.0) { l.pressures = l.pressures.map(|z| vec![z.iter().cloned().fold(0.0, f64::max)]); l.s.points = vec![first]; }
     l
@@ -273,12 +276,28 @@ pub fn rub(l: &Line, a: Point, b: Point, r: f64) -> Option<Vec<Line>> {
     Some(runs.into_iter().filter(|run| run.windows(2).map(|w| (w[1].0 - w[0].0).hypot()).sum::<f64>() > 0.5).map(|run| {
         let p: Vec<[f64; 2]> = run.iter().map(|(p, _)| [p.x, p.y]).collect(); let z: Vec<f64> = run.iter().map(|(_, z)| *z).collect();
         let (p, z) = reduce(&p, spr.map(|_| &z[..]), l.s.width, KEEP);
-        Line { s: Stroke { id: strokes::new_id(), points: p, ..l.s.clone() }, pressures: z } }).collect())
+        Line { s: Stroke { id: strokes::new_id(), points: p, path: None, ..l.s.clone() }, pressures: z } }).collect())   // (what is left of a pen path the rubber went through is plain lines: row 579)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_pen_path_is_kept_moved_and_cut() {
+        use qcv_notes::strokes::{Anchor, PenPath};
+        let path = PenPath { anchors: vec![Anchor { p: [100.0, 300.0], hin: [100.0, 300.0], hout: [200.0, 100.0] }, Anchor { p: [500.0, 300.0], hin: [400.0, 100.0], hout: [500.0, 300.0] }], closed: false };
+        let l = Line { s: Stroke { id: "p".into(), tool: Tool::Freehand, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, filled: false, is_modeled: true, points: path.flatten(), path: Some(path.clone()) }, pressures: None };
+        // kept as an element and read back: the anchors are where they were (to the record's rounding)
+        let (b, record) = write(&l); let e = Element { id: mn_doc::BlockId::new(), kind: "ink".into(), x: b.x0, y: b.y0, w: b.width(), h: b.height(), z: 0, parent: None, record, locked: false };
+        let back = read(&e).unwrap(); let pb = back.s.path.as_ref().unwrap();
+        for (a, o) in pb.anchors.iter().zip(&path.anchors) { for (x, y) in [(a.p, o.p), (a.hin, o.hin), (a.hout, o.hout)] { assert!((x[0] - y[0]).abs() < 0.01 && (x[1] - y[1]).abs() < 0.01, "{x:?} vs {y:?}"); } }
+        // settled: its points are not thinned; placed: the anchors move with the points
+        assert_eq!(settled(l.clone(), 0.5).s.points.len(), l.s.points.len());
+        let m = placed(&l, 2.0, Vec2::new(10.0, 20.0)); assert_eq!(m.s.path.as_ref().unwrap().anchors[1].p, [1010.0, 620.0]);
+        // the rubber through its middle: two plain lines
+        let left = rub(&l, Point::new(300.0, 100.0), Point::new(300.0, 200.0), 12.0).unwrap();
+        assert_eq!(left.len(), 2); assert!(left.iter().all(|x| x.s.path.is_none() && x.s.tool == Tool::Freehand));
+    }
     fn line(tool: Tool, pts: Vec<[f64; 2]>, pr: Option<Vec<f64>>) -> Line { Line { s: Stroke { id: "s".into(), tool, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, filled: false, is_modeled: tool == Tool::Freehand, points: pts, path: None }, pressures: pr } }
     fn el(l: &Line) -> Element { let (b, record) = write(l); Element { id: mn_doc::BlockId::new(), kind: "ink".into(), x: b.x0, y: b.y0, w: b.width(), h: b.height(), z: 1, parent: None, record, locked: false } }
     fn near(a: &Line, b: &Line) -> bool { a.s.points.len() == b.s.points.len() && a.s.points.iter().zip(&b.s.points).all(|(p, q)| (p[0] - q[0]).abs() < 0.01 && (p[1] - q[1]).abs() < 0.01) }
