@@ -148,7 +148,8 @@ pub struct Ui {
     focus: Focus, drag: Option<Drag>, gaps: [Rect; 3], over_gap: Option<usize>, /// in a job the second pane lies BELOW the first (row 484): the panes' area, for the divider in hand
     stacked: bool, panes_area: Rect, /// the item list's width in a job (logical px; its edge can be dragged)
     job_w: f64, cursor: winit31::cursor::CursorIcon,
-    pub menubar: Option<InWindowMenu>, pointer: (f64, f64), pub mods: Mods,
+    pub menubar: Option<InWindowMenu>, pointer: (f64, f64), pub mods: Mods, /// the Alt / Option key is down (a press on a job's row with it is the job view)
+    pub alt: bool,
     /// the scripted looks: the steps still to do, a wait, the picture to save, since when nothing is pending
     /// the window's title as it was last set: the active pane's folder
     titled: String,
@@ -220,7 +221,7 @@ impl Ui {
             list_btn: icon_button("list", key(Cmd::AsList, "List")), grid_btn: icon_button("squares-four", key(Cmd::AsGrid, "Grid")), pane2_btn: icon_button("columns", "Second pane  (Tab switches panes)".to_string()), size: Slider::new(((96.0 - grid::TILE_MIN) / (grid::TILE_MAX - grid::TILE_MIN)) as f32), search,
             path_rect: Rect::ZERO, crumbs: vec![], crumbs_for: None, field: TextField::new(Family::Sans, t::BODY_SIZE_S), path_error: None, check: None,
             focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 3], over_gap: None, stacked: false, panes_area: Rect::ZERO, job_w: { let w = crate::settings::with(|s| s.float("window/job_list")); if w > 0.0 { w.clamp(JOB_LIST_MIN, 1200.0) } else { JOB_LIST } }, cursor: winit31::cursor::CursorIcon::Default,
-            menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
+            menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(), alt: false,
             titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, ctx: min_ui::Menu::new(), ctx_rows: vec![], ctx_paths: vec![], ctx_at: (0.0, 0.0), lightbox, lb_close: ActionButton::new("x", "Close  (Space)"), lb_press: None, lb_tiles: vec![], lb_hover: None, seq_btn: icon_button("stack", "Group sequences".to_string()),
             lb_play: ActionButton::new("play", "Play / pause  (K)"), lb_loop: ActionButton::new("repeat", "Loop  (V)"), lb_mute: ActionButton::new("speaker-high", "Mute  (M)"), lb_qcv: { let mut b = ActionButton::new("", "Open in QCView").size_s(); b.label = Some("Open in QCView".into()); b }, lb_fps: { let mut b = ActionButton::new("", "Frames a second: press to change (remembered for this sequence)").size_s(); b.label = Some("24 fps".into()); b }, lb_layer: { let mut b = ActionButton::new("stack", "Layer shown: press to choose another").size_s(); b.label = Some("Layers".into()); b }, lb_line: Rect::ZERO, lb_click: None, hw: None, lb_last: None, lb_gaps: vec![], lb_cost: vec![], lb_key: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
             dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, task_card: Rect::ZERO, task_off: 0, task_btns: vec![], task_clear: min_ui::text_button::TextButton::new("Clear Finished", min_ui::text_button::Variant::Secondary).size_s(), tasks_rev: 0, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] };
@@ -1735,8 +1736,9 @@ impl Ui {
             if self.side_rect.contains(p) && self.side_rows.iter().any(|r| r.all && r.rect.contains(p)) { self.open_tracker(true); return }
             if self.side_rect.contains(p) && !self.sections.iter().any(|sec| sec.hit(x, y)) { if let Some((to, job)) = self.side_rows.iter().find(|r| r.rect.contains(p) && r.enabled).and_then(|r| r.path.clone().map(|q| (q, r.job))) {
                 // (a job's row too is opened as a FOLDER, in the pane in front - the owner, 2026-11-19: the job view is asked for by
-                // name, "Open as Job" in the row's menu, or with the middle button / the command key, which open it in a new tab)
-                let _ = job; self.open_place(to, false); } } }
+                // name, "Open as Job" in the row's menu or Alt / Option with the click, or with the middle button / the command key, which open it in a new tab)
+                // With Alt / Option held, a job's row is the job view in the tab in front - "Open as Job" by a click.
+                let as_job = job && self.alt; self.open_place(to, as_job); } } }
         // ... and its menu: a place opens here or in a new window (row 448)
         if let Event::Down { x, y, button: Button::Secondary } = *e { if let Some(to) = self.folder_at(x, y, false).filter(|_| self.side_rect.contains(kurbo::Point::new(x, y))) {
             let job = self.side_rows.iter().any(|r| r.job && r.path.as_deref() == Some(to.as_path()));
