@@ -434,6 +434,21 @@ impl Ui {
             if data.cut { text(scene, "the end of a longer file", lines_rect.x1 - 170.0 * s, body.y0 + 12.0 * s, t::DETAIL_SIZE_S, false, false, sub, 160.0 * s); }
         }
         else { match (&self.cursor, &detail) {
+            // no job chosen (or its detail not here yet): the same cards, empty and in the disabled ink, so that the
+            // place of a job's detail is seen and not a hole (the owner, 2026-11-19)
+            (c, None) if body.height() > 160.0 * s => { let faint = paint::color(t::DISABLED_CONTENT_COLOR);
+                let head = Rect::new(body.x0, body.y0, body.x1, body.y0 + 86.0 * s); paint::rounded(scene, head, t::CORNER_RADIUS_500 as f64 * s, t::BACKGROUND_LAYER_2_COLOR);
+                if c.is_none() { text(scene, "No job selected", head.x0 + 12.0 * s, head.y0 + 20.0 * s, t::BODY_SIZE_M, true, false, faint, head.width() - 24.0 * s); }
+                let bar = Rect::new(head.x0 + 12.0 * s, head.y0 + 40.0 * s, head.x1 - 110.0 * s, head.y0 + 50.0 * s); paint::rounded(scene, bar, 3.0 * s, t::BACKGROUND_BASE_COLOR);
+                text(scene, "\u{2014} / \u{2014}", bar.x1 + 10.0 * s, bar.center().y, t::DETAIL_SIZE_M, false, true, faint, 96.0 * s);
+                text(scene, "priority \u{2014}", head.x0 + 12.0 * s, head.y0 + 68.0 * s, t::DETAIL_SIZE_M, false, false, faint, 120.0 * s);
+                let rest = Rect::new(body.x0, head.y1 + pad / 2.0, body.x1, body.y1); let grid_h = (self.layout.grid * s).min(rest.height() - 120.0 * s).max(60.0 * s);
+                let grid = Rect::new(rest.x0, rest.y0, rest.x1, rest.y0 + grid_h); paint::rounded(scene, grid, t::CORNER_RADIUS_500 as f64 * s, GRID_PIT); self.grid_rect = Rect::ZERO;
+                self.gaps[2] = Rect::new(rest.x0, grid.y1, rest.x1, grid.y1 + pad / 2.0);
+                let table = Rect::new(rest.x0, grid.y1 + pad / 2.0, rest.x1, rest.y1); paint::rounded(scene, table, t::CORNER_RADIUS_500 as f64 * s, t::BACKGROUND_LAYER_2_COLOR); self.chunks_rect = Rect::ZERO;
+                let mut x = table.x0 + 8.0 * s; for (label, cw) in CHUNK_COLUMNS.iter() { text(scene, label, x, table.y0 + HEADER * s / 2.0, t::DETAIL_SIZE_M, false, false, faint, cw * s); x += cw * s + 8.0 * s; }
+                paint::hline(scene, table.x0, table.x1, table.y0 + HEADER * s, t::DIVIDER_THICKNESS as f64 * s, t::DIVIDER_COLOR_MEDIUM);
+            }
             (None, _) => { text(scene, "No job selected", body.x0 + 12.0 * s, body.y0 + 24.0 * s, t::BODY_SIZE_S, false, false, sub, 240.0 * s); }
             (Some(_), None) => {}
             (Some(_), Some(d)) if body.height() > 160.0 * s => {

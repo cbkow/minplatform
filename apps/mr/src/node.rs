@@ -567,7 +567,7 @@ impl Node {
     /// What the tray and the window say of this node: (rendering which job, stopped).
     pub fn state(&self) -> (Option<String>, bool) { (self.work.lock().unwrap().running.as_ref().map(|r| r.job.clone()), self.stopped.load(Ordering::Relaxed)) }
     pub fn set_stopped(&self, on: bool) {
-        self.stopped.store(on, Ordering::Relaxed); if on { self.cut(None, Cut::Fail); }
+        let was = self.stopped.swap(on, Ordering::Relaxed); if was != on { log(if !on { "the node is started again" } else if self.work.lock().unwrap().running.is_some() { "the node is stopped: the render is killed" } else { "the node is stopped" }); } if on { self.cut(None, Cut::Fail); }
         let f = self.data.join("config.json"); if let Some(mut v) = std::fs::read_to_string(&f).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) { v["node_stopped"] = json!(on); let _ = write_atomically(&f, &serde_json::to_string_pretty(&v).unwrap()); }
     }
     /// The render under way is killed (4.10) - of `job` only, when one is named. There is no gentle step.
