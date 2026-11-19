@@ -75,6 +75,7 @@ impl BlenderInput {
             Ok(Some(c)) => {
                 self.logged_error = None;
                 let ev = match &self.card { None => Some(Event::Arrived), Some(old) if *old != c => Some(Event::Changed), _ => None };
+                if let Some(e) = &ev { log::info!("Blender card {}: {} (status {:?})", if matches!(e, Event::Arrived) { "arrived" } else { "changed" }, qcv_player::stream_feed::redact(&c.url), c.status); }
                 self.card = Some(c); ev
             }
             Ok(None) => { if self.card.take().is_some() { Some(Event::Removed) } else { None } }

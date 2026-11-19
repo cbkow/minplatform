@@ -110,7 +110,9 @@ enum Phase { DrainToEdge, WaitKeyframe, Streaming }
 /// One connection; true when it delivered frames.
 fn session(sh: &Shared, url: &str, hw: Option<HwDevice>) -> bool {
     let opts = OpenOptions { threads: 0, hw, hw_intra: None, seq: None, fast: false, live: Some(sh.stop.clone()) };
-    let mut s = match Session::open(url, &opts) { Ok(s) => s, Err(e) => { if !sh.stop.load(Acquire) { log::debug!("LiveStreamDecoder: open {}: {e}", redact(url)); } return false } };
+    let t0 = Instant::now(); log::info!("LiveStreamDecoder: opening {}", redact(url));
+    let mut s = match Session::open(url, &opts) { Ok(s) => s, Err(e) => { if !sh.stop.load(Acquire) { log::info!("LiveStreamDecoder: open {} failed after {:.3} s: {e}", redact(url), t0.elapsed().as_secs_f64()); } return false } };
+    let t_open = Instant::now();
     let i = &s.info;
     let fps = (i.frame_rate.1 > 0).then(|| i.frame_rate.0 as f64 / i.frame_rate.1 as f64).filter(|f| *f > 0.0 && *f < 1000.0);
     *sh.info.lock().unwrap() = Info { width: i.width, height: i.height, codec: i.codec_short.clone(), pix_fmt: i.pix_fmt.clone(), fps, tags: i.tags.clone() };
@@ -119,13 +121,13 @@ fn session(sh: &Shared, url: &str, hw: Option<HwDevice>) -> bool {
     let (mut phase, mut fast, mut draining, mut last_pub, mut delivered) = (Phase::DrainToEdge, 0u32, false, None::<Instant>, false);
     while !sh.stop.load(Acquire) {
         match s.read_live() {
-            LiveRead::Eof => { log::info!("LiveStreamDecoder: end of stream"); break }
-            LiveRead::Error(e) => { if !sh.stop.load(Acquire) { log::info!("LiveStreamDecoder: read: {}", min_ffmpeg::ffmpeg::av_err(e)); } break }
+            LiveRead::Eof => { log::info!("LiveStreamDecoder: end of stream ({:.1} s after its open)", t_open.elapsed().as_secs_f64()); break }
+            LiveRead::Error(e) => { if !sh.stop.load(Acquire) { log::info!("LiveStreamDecoder: read: {} ({:.1} s after its open)", min_ffmpeg::ffmpeg::av_err(e), t_open.elapsed().as_secs_f64()); } break }
             LiveRead::Other { bytes } => { sh.bytes.fetch_add(bytes as u64, Relaxed); }
             LiveRead::Video { key, bytes, blocked } => {
                 sh.bytes.fetch_add(bytes as u64, Relaxed);
-                if phase == Phase::DrainToEdge { if !blocked { s.drop_held(); continue } phase = Phase::WaitKeyframe; }
-                if phase == Phase::WaitKeyframe { if !key { s.drop_held(); continue } phase = Phase::Streaming; }
+                if phase == Phase::DrainToEdge { if !blocked { s.drop_held(); continue } phase = Phase::WaitKeyframe; log::info!("LiveStreamDecoder: at the live edge {:.3} s after the open", t_open.elapsed().as_secs_f64()); }
+                if phase == Phase::WaitKeyframe { if !key { s.drop_held(); continue } phase = Phase::Streaming; log::info!("LiveStreamDecoder: first keyframe {:.3} s after the open", t_open.elapsed().as_secs_f64()); }
                 if blocked { fast = 0; if draining { draining = false; s.set_skip_nonref(false); } }
                 else { fast += 1; if fast >= BURST_FAST_READS && !draining { draining = true; s.set_skip_nonref(true); } }
                 s.send_held();
@@ -135,6 +137,7 @@ fn session(sh: &Shared, url: &str, hw: Option<HwDevice>) -> bool {
                             let now = Instant::now();
                             if draining && last_pub.is_some_and(|t| now.duration_since(t) < DRAIN_KEEPALIVE) { sh.conflated.fetch_add(1, Relaxed); continue }
                             if !delivered { let pf = s.current_pix_fmt(); if !pf.is_empty() { sh.info.lock().unwrap().pix_fmt = pf; } }
+                            if !delivered { log::info!("LiveStreamDecoder: first frame {:.3} s after the open, {:.3} s after the listen / call began", t_open.elapsed().as_secs_f64(), t0.elapsed().as_secs_f64()); }
                             last_pub = Some(now); delivered = true;
                             *sh.slot.lock().unwrap() = Some(h.frame);
                             sh.frames.fetch_add(1, Relaxed);

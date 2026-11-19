@@ -115,10 +115,14 @@ impl Session {
                 set(&mut dict, "fflags", "nobuffer"); set(&mut dict, "analyzeduration", "1000000"); set(&mut dict, "probesize", "2000000");
                 set(&mut dict, "fpsprobesize", "0");   // QCView: an idle Blender sender made HEVC's fps probe wait ~5 s
             }
+            // (a live open says how long the connection and the probe took: the start of a stream is measured from these)
+            let t_open = std::time::Instant::now();
             let r = ff::avformat_open_input(&mut fmt, cpath.as_ptr(), ptr::null_mut(), &mut dict);
             ff::av_dict_free(&mut dict);
             if r < 0 { return Err(Error::Open(format!("avformat_open_input: {}", av_err(r)))) }
+            let t_probe = std::time::Instant::now();
             if ff::avformat_find_stream_info(fmt, ptr::null_mut()) < 0 { ff::avformat_close_input(&mut fmt); return Err(Error::Open("avformat_find_stream_info failed".into())) }
+            if opts.live.is_some() { log::info!("live open: connected after {:.3} s, probed in {:.3} s", t_probe.duration_since(t_open).as_secs_f64(), t_probe.elapsed().as_secs_f64()); }
             // the FIRST video stream (QCView), not av_find_best_stream — a live stream: the best one, the rest discarded
             let mut stream_idx = -1;
             if opts.live.is_some() {
