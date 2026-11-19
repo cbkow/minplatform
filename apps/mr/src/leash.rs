@@ -4,7 +4,10 @@
 //! application died: the same pipe closes). It holds no farm logic, reads no file, and speaks to nobody.
 //!
 //! Windows: the leash puts ITSELF in a job that dies with its last handle, BEFORE it starts anything; whatever it
-//! starts is born in the job. If Windows refuses the job, nothing is started (exit 3): a render is never run unfenced.
+//! starts is born in the job - except from the Store package: a packaged program's child that is not of the package is
+//! started OUTSIDE its job (seen on the live farm, 2026-11-19: the kill took the leash and left the render running). So
+//! the renderer is also put in the job by hand as soon as it is started, as 0.5.x's agent did; one that cannot be put
+//! there is ended. If Windows refuses the job, nothing is started (exit 3): a render is never run unfenced.
 //! Elsewhere: the renderer is the leader of a new process group, and the group is killed. The group's id is printed
 //! first, so that the application can kill it too if the leash itself is killed.
 //! The renderer's output passes through untouched: it inherits the leash's standard output and error.
@@ -24,6 +27,8 @@ pub fn run(cmd: &[String]) -> ! {
     #[cfg(windows)] let job = { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); os::fence() };
     #[cfg(unix)] { use std::os::unix::process::CommandExt; c.process_group(0); }
     let mut child = match c.spawn() { Ok(c) => c, Err(e) => { eprintln!("could not start {}: {e}", cmd[0]); std::process::exit(NOT_STARTED) } };
+    #[cfg(windows)] { use std::os::windows::io::AsRawHandle;
+        if !os::hold(job, child.as_raw_handle() as isize) && child.try_wait().ok().flatten().is_none() { let _ = child.kill(); eprintln!("{} could not be put in the leash's job: ended", cmd[0]); std::process::exit(REFUSED) } }
     #[cfg(unix)] { println!("{GROUP_LINE}{}", child.id()); let _ = std::io::stdout().flush(); }
     let id = child.id(); let _ = id; let _ = std::io::stdout().flush();
     std::thread::spawn(move || {
@@ -53,5 +58,10 @@ mod os {
         if SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32).is_err() { std::process::exit(super::REFUSED) }
         if AssignProcessToJobObject(job, GetCurrentProcess()).is_err() { std::process::exit(super::REFUSED) }
         job.0 as isize } }
+    /// The started program is put in the leash's job, whatever it was born in. Says whether it is there.
+    pub fn hold(job: isize, process: isize) -> bool { unsafe {
+        let (job, process) = (HANDLE(job as *mut _), HANDLE(process as *mut _));
+        let _ = AssignProcessToJobObject(job, process);   // (refused for a process that is in the job already)
+        let mut inside = windows::core::BOOL(0); IsProcessInJob(process, Some(job), &mut inside).is_ok() && inside.as_bool() } }
     pub fn kill(job: isize) { unsafe { let _ = TerminateJobObject(HANDLE(job as *mut _), 1); } }
 }
