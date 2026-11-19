@@ -58,7 +58,12 @@
   edited ONLY on a branch that never touches `main` (user 2026-11-07: "you can touch other repos as long as we work in a
   branch for now without affecting main"); pushing the branch is fine, merging is the user's call. Measure and read them
   freely; vendor frozen contract sources with a stamp.
-- `git push` and merges are the user's: commit locally, say how far `main` is ahead.
+- **Pushing is asked for ONCE PER SESSION** (the owner, 2026-11-19: "request permission once per session ... there might
+  be a time where we are experimenting and don't yet want to push"). At the first commit of a session that could be
+  pushed, ask whether this session may push as the work goes. With a yes, push your own commits to `main` here and to
+  working branches of the sibling repos without asking again that session; with a no, or before the answer, commit
+  locally and say how far `main` is ahead. A yes does not carry to the next session. Merging a sibling repo's `main`,
+  tags and releases are on the owner's word each time, whatever the answer.
 - Spike protocol (§21.3): one question, one pass bar with a number, one time box, one written
   verdict in `docs/spikes/`. No verdict = not done. Spikes die; they are never renamed into crates.
 - `docs/spikes/P0-baseline.md` holds the measured Qt numbers every pass bar is compared against.
