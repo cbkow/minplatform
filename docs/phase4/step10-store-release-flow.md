@@ -126,3 +126,17 @@ a pre-0.5.8 `%LOCALAPPDATA%\MinRender` folder (every node is on the latest: the 
 4. The owner submits, with manual publishing; nodes are upgraded together by `winget upgrade`, farm idle.
 5. macOS goes its own way, as before: a notarized DMG and the Sparkle feed at minrender.com (0.5.x:
    `scripts/macos-release.sh`, `scripts/update_appcast.sh`; team and notary profile as the other two applications).
+
+## 1.0.2 (2026-11-19, rows 593-594): what the release taught
+
+- **A kill test on Windows is run from INSIDE a package.** A program started by a packaged executable, when it is not
+  of the package, is started outside the starter's job; the leash's job did not hold the renderer from the Store
+  package while it did from the same executable unpackaged, which is where every earlier kill test had run. The leash
+  now puts the renderer in its job by hand after starting it. To test: install the test-identity package from the
+  desktop session (an install over ssh is refused), run the check with `Invoke-CommandInDesktopPackage`, remove the
+  package again.
+- **The notices are generated after the version's `Cargo.lock` is committed** (the check file records HEAD's), and
+  `make_notices.py windows --app mr` needs `--out packaging/notices/generated/minrender-THIRD-PARTY-NOTICES-windows.html`.
+- A wait for a script's "done" file starts by deleting the old one, or it returns at once.
+- Still open: a real Blender render stopped on a Store-installed 1.0.2 node (a stand-in tree was what was killed).
+

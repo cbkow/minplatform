@@ -1,6 +1,7 @@
 # minplatform — working notes for Claude
 
-- **State (2026-11-18):** Phase 2 — `apps/qcv` is the QCView port (binary `QCView`). **QCView 3.0.3 is RELEASED on macOS
+- **State (2026-11-19):** this day minRender 1.0.2, QCBridge 0.5.0 and UFB 2.0.7 went out (their lines below); nothing is
+  being built. Phase 2 — `apps/qcv` is the QCView port (binary `QCView`). **QCView 3.0.3 is RELEASED on macOS
   and PACKED for the Store (2026-11-18, rows 554-583, tag `v3.0.3`: the pen path tool, container pixel aspect and Custom
   aspect, Export to minNotes, the audio tile, Blender 5.3; the last sections of `docs/phase2/handoff-2026-11-10.md`).**
   Before it: **QCView 3.0.2 was RELEASED on macOS**
@@ -36,6 +37,13 @@
   cache layer, no agent, no third-party driver; **resume from `docs/phase5/handoff-2026-11-17.md`** (built, never
   exercised, the agreed order of what is next); mounts are "ask and watch"; metadata and the mesh stay compatible
   with 1.4.2 and are mended additively; a project-type schema. It will live in `apps/ufb`. Read rows 434-505 first.
+- **QCBridge (the Blender bridge; its own repository `../QCBridge`, GPL-3): 0.5.0 is RELEASED (2026-11-19, GitHub `v0.5.0`).**
+  Its agent's settings window is built on THIS repository's `min-ui`, `min-theme` and `min-present` as path dependencies
+  (`../../minplatform/crates/...`, `agent/src/settings/window.rs`): a change to those crates' public API can break the
+  agent's build - build `../QCBridge/agent` after one, and a QCBridge release names a pushed commit here. The round's
+  record (the start measured and mended within SRT - Kyber was weighed and dropped again; a geometry-nodes bake on the
+  replica; the window; the release as it is made) is in the local Claude memory, not in this repository; QCView's part
+  of it is the timing lines of a live stream's start in the log (`stream_feed.rs`, `min-ffmpeg`'s live open).
 - **Talk before building.** Design changes get a scoped proposal — "rulings needed" with [proposed] defaults — and are built on
   the user's go. Every ruling is dated in the canon. A new step starts with an agent reading QCView's code into a spec.
 - **QCView's behaviour wins ties.** Read QCView-Player's code before porting a piece; a divergence needs a written reason (and a
