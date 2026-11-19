@@ -73,6 +73,9 @@ struct Rows<'a> { model: &'a Model, icons: &'a Icons, px: u32, today: Civil,
 impl Rows<'_> {
     /// A row's own picture (a thumbnail, the icon of that very file) when it has come; else its type's icon.
     fn picture(&self, i: usize) -> Option<&peniko::ImageBrush> {
+        // (a web link's file keeps its link glyph: the picture the system has for that very file - the browser's icon
+        // on Windows, a page's preview on macOS - is not taken; seen on Windows 2026-11-19)
+        if let Some(ext) = self.model.row(i).map(|id| self.model.ext(id)).filter(|e| *e == "url" || *e == "webloc") { return self.icons.peek(ext, self.px) }
         i.checked_sub(self.first).and_then(|k| self.keys.get(k)).copied().flatten().and_then(|k| self.thumbs.peek(k)).or_else(|| self.icons.peek(self.model.ext(self.model.row(i)?), self.px))
     }
 }
