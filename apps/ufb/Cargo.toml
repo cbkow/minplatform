@@ -22,6 +22,8 @@ min-paths = { path = "../../crates/min-paths" }
 # real drags of files to and from the system (canon row 472)
 min-dnd = { path = "../../crates/min-dnd" }
 min-theme = { path = "../../crates/min-theme" }
+# the link glyph of a web link's file, drawn from the icon font off the UI thread (icons.rs)
+ab_glyph = "0.2"
 vello = { workspace = true }
 peniko = { workspace = true }
 kurbo = { workspace = true }

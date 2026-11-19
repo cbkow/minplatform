@@ -44,7 +44,10 @@ pub fn rows_for(entries: &[(bool, bool)], sequence: bool) -> Vec<Row> {
     // a hand's word against the detector's (row 475): a sequence as its files; several files as one sequence
     if sequence { rows.extend([ours(SPLIT, "Show as Separate Files"), Row::Sep]); } else if !one && !folders { rows.extend([ours(GROUP, "Group as Sequence"), Row::Sep]); }
     if one && !sequence { rows.push(ours(RENAME, "Rename")); }
-    rows.extend([ours(DUPLICATE, "Duplicate"), ours(COPY, "Copy"), ours(TRASH, TRASH_LABEL), Row::Sep, Row::Share]);
+    rows.extend([ours(DUPLICATE, "Duplicate"), ours(COPY, "Copy"), ours(TRASH, TRASH_LABEL), Row::Sep]);
+    // (a full folder has no empty part to press for the folder's own menu: a web link can be made from an entry's menu
+    // too, in the folder in view - the owner, 2026-11-19)
+    rows.extend([ours(NEW_LINK, "New Web Link\u{2026}"), Row::Sep, Row::Share]);
     rows
 }
 /// The rows for the folder in view itself (a click on the empty part of a pane).
@@ -54,7 +57,10 @@ pub const NEW_DATE: u32 = 88; pub const NEW_TIME: u32 = 89; /// row 590: 1.4.2's
 pub const NEW_UFB: u32 = 90;
 pub fn rows_for_folder() -> Vec<Row> { vec![ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Reveal, Row::Sep, ours(NEW_FOLDER, "New Folder"), ours(NEW_UFB, "New UFB Folder\u{2026}"), ours(NEW_DATE, "New Date Folder"), ours(NEW_TIME, "New Time Folder"), ours(NEW_LINK, "New Web Link\u{2026}"), ours(NEW_NOTE, "New minNote\u{2026}"), ours(PASTE, "Paste"), Row::Sep, ours(REFRESH, "Refresh")] }
 /// The rows for a job in the sidebar.
-pub fn rows_for_job() -> Vec<Row> { vec![ours(OPEN, "Open"), ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal, Row::Sep, ours(UNSUBSCRIBE, "Unsubscribe")] }
+/// (2026-11-19: "Open" is the folder in the pane in front, as a click on the row is; "Open as Job" is the job view in
+/// the tab in front; "Open in New Tab" is the job view in a new tab, as the middle button and the command key are.)
+pub const OPEN_JOB: u32 = 91;
+pub fn rows_for_job() -> Vec<Row> { vec![ours(OPEN, "Open"), ours(OPEN_JOB, "Open as Job"), ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal, Row::Sep, ours(UNSUBSCRIBE, "Unsubscribe")] }
 /// The row that makes a folder a job in the sidebar, or takes it out again.
 pub fn row_subscribe(subscribed: bool) -> Row { if subscribed { ours(UNSUBSCRIBE, "Unsubscribe") } else { ours(SUBSCRIBE, "Subscribe as Job") } }
 /// The rows of a list's header: the fields to sort by - also those too far right to be seen in a narrow pane (row 483).
@@ -458,12 +464,12 @@ mod tests {
     fn labels(rows: &[Row]) -> Vec<String> { rows.iter().map(|r| match r { Row::Ours { id, label } => format!("{label}{}", if *id == 0 { " (later)" } else { "" }), Row::Sep => "--".into(), Row::Open => "<Open>".into(), Row::OpenWith => "<Open With>".into(), Row::Reveal => "<Show in Finder>".into(), Row::Share => "<Share>".into() }).collect() }
     #[test]
     fn the_rows_follow_what_is_chosen() {
-        assert_eq!(labels(&rows_for(&[(true, false)], false)), ["Open", "Open in New Tab", "Open in New Window", "--", "<Show in Finder>", "--", "Rename", "Duplicate", "Copy", TRASH_LABEL, "--", "<Share>"], "one folder");
-        assert_eq!(labels(&rows_for(&[(false, false)], false)), ["Preview", "<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Rename", "Duplicate", "Copy", TRASH_LABEL, "--", "<Share>"], "one file");
+        assert_eq!(labels(&rows_for(&[(true, false)], false)), ["Open", "Open in New Tab", "Open in New Window", "--", "<Show in Finder>", "--", "Rename", "Duplicate", "Copy", TRASH_LABEL, "--", "New Web Link\u{2026}", "--", "<Share>"], "one folder");
+        assert_eq!(labels(&rows_for(&[(false, false)], false)), ["Preview", "<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Rename", "Duplicate", "Copy", TRASH_LABEL, "--", "New Web Link\u{2026}", "--", "<Share>"], "one file");
         assert_eq!(labels(&rows_for(&[(false, true)], false))[..4], ["Preview", "<Open>", "Show Package Contents", "<Open With>"], "an application");
-        assert_eq!(labels(&rows_for(&[(false, false), (false, false)], false)), ["<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Group as Sequence", "--", "Duplicate", "Copy", TRASH_LABEL, "--", "<Share>"], "several files: no Rename; they can be made one sequence");
-        assert_eq!(labels(&rows_for(&[(false, false)], true)), ["Preview", "<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Show as Separate Files", "--", "Duplicate", "Copy", TRASH_LABEL, "--", "<Share>"], "a sequence: no Rename; it can be shown as its files");
-        assert_eq!(labels(&rows_for(&[(true, false), (false, false)], false)), ["<Show in Finder>", "--", "Duplicate", "Copy", TRASH_LABEL, "--", "<Share>"], "a folder among them: nothing opens");
+        assert_eq!(labels(&rows_for(&[(false, false), (false, false)], false)), ["<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Group as Sequence", "--", "Duplicate", "Copy", TRASH_LABEL, "--", "New Web Link\u{2026}", "--", "<Share>"], "several files: no Rename; they can be made one sequence");
+        assert_eq!(labels(&rows_for(&[(false, false)], true)), ["Preview", "<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Show as Separate Files", "--", "Duplicate", "Copy", TRASH_LABEL, "--", "New Web Link\u{2026}", "--", "<Share>"], "a sequence: no Rename; it can be shown as its files");
+        assert_eq!(labels(&rows_for(&[(true, false), (false, false)], false)), ["<Show in Finder>", "--", "Duplicate", "Copy", TRASH_LABEL, "--", "New Web Link\u{2026}", "--", "<Share>"], "a folder among them: nothing opens");
         assert_eq!(labels(&rows_for_folder()), ["Open in New Tab", "Open in New Window", "<Show in Finder>", "--", "New Folder", "New UFB Folder\u{2026}", "New Date Folder", "New Time Folder", "New Web Link\u{2026}", "New minNote\u{2026}", "Paste", "--", "Refresh"]);
         assert_eq!(labels(&rows_for_place()), ["Open", "Open in New Tab", "Open in New Window", "--", "<Show in Finder>"]);
     }

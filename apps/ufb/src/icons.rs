@@ -24,6 +24,24 @@ pub struct Request { pub id: u64, pub what: What, pub px: u32 }
 pub struct Answer { pub id: u64, pub image: Option<Img> }
 pub struct Img { pub w: u32, pub h: u32, pub rgba: Vec<u8> }
 
+/// A web link's file (`.url`, `.webloc`) is shown with the theme's link glyph in the accent colour, alike on both
+/// systems - the system's own icon for one is a blank sheet on macOS and the browser's on Windows (the owner,
+/// 2026-11-19). Drawn here from the icon font; none when the font has no such glyph (the system's icon then).
+fn link_icon(px: u32) -> Option<Img> {
+    use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
+    let font = FontRef::try_from_slice(min_theme::fonts::PHOSPHOR).ok()?; let ch = min_theme::icons::glyph("link")?;
+    let size = px as f32 * 0.82; let scaled = font.as_scaled(PxScale::from(size));
+    let mut g = scaled.scaled_glyph(ch); g.position = ab_glyph::point(0.0, 0.0);
+    let outline = font.outline_glyph(g)?; let b = outline.px_bounds();
+    let (ox, oy) = (((px as f32 - b.width()) / 2.0).round() as i32, ((px as f32 - b.height()) / 2.0).round() as i32);
+    let c = min_theme::tokens::ACCENT_VISUAL_COLOR; let mut rgba = vec![0u8; (px * px * 4) as usize];
+    outline.draw(|x, y, cov| { let (x, y) = (x as i32 + ox, y as i32 + oy); if x < 0 || y < 0 || x >= px as i32 || y >= px as i32 { return }
+        let a = cov.clamp(0.0, 1.0) * c.a; let i = ((y as u32 * px + x as u32) * 4) as usize;
+        // (premultiplied, as every icon here is)
+        rgba[i] = (c.r * a * 255.0).round() as u8; rgba[i + 1] = (c.g * a * 255.0).round() as u8; rgba[i + 2] = (c.b * a * 255.0).round() as u8; rgba[i + 3] = (a * 255.0).round() as u8; });
+    Some(Img { w: px, h: px, rgba })
+}
+
 enum Slot { Waiting, Ready(peniko::ImageBrush), Failed }
 
 pub struct Icons { tx: Sender<Request>, rx: Receiver<Answer>, slots: HashMap<u32, HashMap<String, Slot>>, waiting: HashMap<u64, (String, u32)>, next: u64 }
@@ -38,7 +56,7 @@ impl Icons {
         let (tx, jobs) = channel::<Request>(); let (out, rx) = channel::<Answer>();
         let _ = std::thread::Builder::new().name("ufb-icons".into()).spawn(move || {
             sys::init();
-            while let Ok(r) = jobs.recv() { let image = match &r.what { What::Type(ext) => sys::type_icon(ext, r.px) }; if out.send(Answer { id: r.id, image }).is_err() { break } port.send(Msg::Icon); }
+            while let Ok(r) = jobs.recv() { let image = match &r.what { What::Type(ext) if ext == "url" || ext == "webloc" => link_icon(r.px).or_else(|| sys::type_icon(ext, r.px)), What::Type(ext) => sys::type_icon(ext, r.px) }; if out.send(Answer { id: r.id, image }).is_err() { break } port.send(Msg::Icon); }
         });
         Icons { tx, rx, slots: HashMap::new(), waiting: HashMap::new(), next: 1 }
     }

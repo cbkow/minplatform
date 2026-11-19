@@ -1587,7 +1587,8 @@ impl Ui {
         if (crate::ctxmenu::META_ADD..70).contains(&id) || id >= crate::ctxmenu::META_SHOW { return self.meta_chosen(id) }
         let Some((pane, folder)) = self.menu_for.clone() else { return };
         match id {
-            OPEN if self.menu_job => self.open_place(folder, true),
+            OPEN if self.menu_job => self.open_place(folder, false),
+            crate::ctxmenu::OPEN_JOB => self.open_place(folder, true),
             NEW_TAB if self.menu_job => { self.new_tab(folder.clone()); self.open_place(folder, true); }
             OPEN | CONTENTS => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.go(folder); }
             NEW_TAB => self.new_tab(folder),
@@ -1732,7 +1733,10 @@ impl Ui {
         self.side_hover = at.filter(|p| self.side_rect.contains(*p)).and_then(|p| self.side_rows.iter().position(|r| r.rect.contains(p)));
         if let Event::Down { x, y, button: Button::Primary } = *e { let p = kurbo::Point::new(x, y);
             if self.side_rect.contains(p) && self.side_rows.iter().any(|r| r.all && r.rect.contains(p)) { self.open_tracker(true); return }
-            if self.side_rect.contains(p) && !self.sections.iter().any(|sec| sec.hit(x, y)) { if let Some((to, job)) = self.side_rows.iter().find(|r| r.rect.contains(p) && r.enabled).and_then(|r| r.path.clone().map(|q| (q, r.job))) { self.open_place(to, job); } } }
+            if self.side_rect.contains(p) && !self.sections.iter().any(|sec| sec.hit(x, y)) { if let Some((to, job)) = self.side_rows.iter().find(|r| r.rect.contains(p) && r.enabled).and_then(|r| r.path.clone().map(|q| (q, r.job))) {
+                // (a job's row too is opened as a FOLDER, in the pane in front - the owner, 2026-11-19: the job view is asked for by
+                // name, "Open as Job" in the row's menu, or with the middle button / the command key, which open it in a new tab)
+                let _ = job; self.open_place(to, false); } } }
         // ... and its menu: a place opens here or in a new window (row 448)
         if let Event::Down { x, y, button: Button::Secondary } = *e { if let Some(to) = self.folder_at(x, y, false).filter(|_| self.side_rect.contains(kurbo::Point::new(x, y))) {
             let job = self.side_rows.iter().any(|r| r.job && r.path.as_deref() == Some(to.as_path()));
