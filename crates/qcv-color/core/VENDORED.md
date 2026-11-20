@@ -1,7 +1,7 @@
 # Vendored from minColorAE
 
 The minColor engine's maths, copied unmodified from `github.com/cbkow/minColorAE` `core/` at commit **ae9f922**
-(2026-11-19, 0.1.7, branch `camera-logs-0.1.7`), GPL-3.0-only, © 2026 cbkow. The rendering is derived from OpenDRT
+(2026-11-19, 0.1.7, tag `v0.1.7`), GPL-3.0-only, © 2026 cbkow. The rendering is derived from OpenDRT
 v1.1.0 by Jed Smith (GPL-3.0), modified in minColorAE — see `CHANGES-FROM-OPENDRT.md`; the AgX port's provenance is in
 `CHANGES-AGX.md`. Not affiliated with or endorsed by OpenDRT, darktable or Blender.
 

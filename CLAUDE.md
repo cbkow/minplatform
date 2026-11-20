@@ -4,8 +4,7 @@
   and PACKED for the Store (2026-11-19, rows 596-598, tag `v3.0.4`: ProRes RAW plays again - its mosaic made colour on
   the GPU, `bayer.wgsl`, with the clip's own colour data, linear Rec.2020 to the chain - and six camera encodings in
   minColor from minColorAE 0.1.7's core; the LAST section of `docs/phase2/handoff-2026-11-10.md`).** minColorAE 0.1.7
-  is built for both systems on its branch `camera-logs-0.1.7` and waits for the owner's look in After Effects before it
-  is published. Phase 2 — `apps/qcv` is the QCView port (binary `QCView`). Before it: **QCView 3.0.3 was RELEASED on macOS
+  is RELEASED too (GitHub `v0.1.7`, after the owner's look in After Effects). Phase 2 — `apps/qcv` is the QCView port (binary `QCView`). Before it: **QCView 3.0.3 was RELEASED on macOS
   and PACKED for the Store (2026-11-18, rows 554-583, tag `v3.0.3`: the pen path tool, container pixel aspect and Custom
   aspect, Export to minNotes, the audio tile, Blender 5.3; the last sections of `docs/phase2/handoff-2026-11-10.md`).**
   Before it: **QCView 3.0.2 was RELEASED on macOS**
