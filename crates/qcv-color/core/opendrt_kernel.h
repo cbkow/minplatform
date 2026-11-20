@@ -113,6 +113,14 @@ __DEVICE__ drt_mat3 drt_mat3_inverse(drt_mat3 m) {
 #define drt_matrix_egamut_to_xyz drt_make_mat3(make_float3(0.705396850087770755f, 0.164041328309919021f, 0.0810177486539819941f), make_float3(0.280130724091105898f, 0.820206641549595106f, -0.100337365640700782f), make_float3(-0.103781511569163279f, -0.0729072570266306313f, 1.26574651935567273f))
 #define drt_matrix_egamut2_to_xyz drt_make_mat3(make_float3(0.736477700183697404f, 0.130739651086660136f, 0.0832385757813140781f), make_float3(0.275069984405959256f, 0.828017790215514138f, -0.103087774621473588f), make_float3(-0.124225154247852534f, -0.0871597673911067433f, 1.30044267239883782f))
 #define drt_matrix_davinciwg_to_xyz drt_make_mat3(make_float3(0.700622392093671609f, 0.148774815123196763f, 0.101058719834803246f), make_float3(0.274118510906649016f, 0.873631895940436665f, -0.147750406847085763f), make_float3(-0.0989629128832311411f, -0.137895325075543307f, 1.32591598871865268f))
+/* Not in upstream (DRT_IN_APPLE_WG and after): each is its published primaries with a D65 white, no adaptation.
+   Apple Wide Gamut (0.725 0.301, 0.221 0.814, 0.068 -0.076); Canon Cinema Gamut (0.74 0.27, 0.17 1.14, 0.08 -0.10);
+   Blackmagic Wide Gamut Gen 5 (0.7177215 0.3171181, 0.2280410 0.8615690, 0.1005841 -0.0820452, white 0.3127170 0.3290312);
+   DJI D-Gamut (0.71 0.31, 0.21 0.88, 0.09 -0.08). */
+#define drt_matrix_applewg_to_xyz drt_make_mat3(make_float3(0.651491480167306847f, 0.221553113294040288f, 0.0774113335903242605f), make_float3(0.2704812903867026f, 0.816037258920130348f, -0.0865185493068329897f), make_float3(-0.023363832392206841f, -0.0350875971280153534f, 1.14750918028010074f))
+#define drt_matrix_canoncgamut_to_xyz drt_make_mat3(make_float3(0.716049646551520369f, 0.129683477875739639f, 0.104722802624411596f), make_float3(0.261261357525554738f, 0.869642145754959905f, -0.130903503280514505f), make_float3(-0.00967634657502055434f, -0.236481636126348704f, 1.33521573346124778f))
+#define drt_matrix_bmdwg5_to_xyz drt_make_mat3(make_float3(0.606530372213145985f, 0.22040809533759817f, 0.123479000458368793f), make_float3(0.267989407072974195f, 0.832730878622349069f, -0.100720285695323208f), make_float3(-0.0294421660153097488f, -0.0866106069663006295f, 1.20486076444260215f))
+#define drt_matrix_djidgamut_to_xyz drt_make_mat3(make_float3(0.64817196863381521f, 0.194058149820755171f, 0.108225808597101472f), make_float3(0.283004662361243275f, 0.813196056391735977f, -0.0962007187529790864f), make_float3(-0.0182583653136285627f, -0.0831677784946093374f, 1.19048389456811621f))
 
 /* P3D65 to XYZ D65 */
 #define drt_matrix_p3d65_to_xyz drt_make_mat3(make_float3(0.486570948648216151f, 0.265667693169093f, 0.198217285234362467f), make_float3(0.228974564069748754f, 0.691738521836506193f, 0.079286914093744984f), make_float3(-4.00000000000000029e-17f, 0.0451133818589026167f, 1.04394436890097575f))
@@ -184,6 +192,10 @@ __DEVICE__ drt_mat3 drt_gamut_to_xyz(int gamut) {
   else if (gamut == 12) m = drt_matrix_egamut_to_xyz;
   else if (gamut == 13) m = drt_matrix_egamut2_to_xyz;
   else if (gamut == 14) m = drt_matrix_davinciwg_to_xyz;
+  else if (gamut == 15) m = drt_matrix_applewg_to_xyz;
+  else if (gamut == 16) m = drt_matrix_canoncgamut_to_xyz;
+  else if (gamut == 17) m = drt_matrix_bmdwg5_to_xyz;
+  else if (gamut == 18) m = drt_matrix_djidgamut_to_xyz;
   else m = drt_identity();  /* 0 = XYZ, and anything out of range */
   return m;
 }
@@ -258,6 +270,27 @@ __DEVICE__ float drt_oetf_fujifilm_flog2(float x) {
   return x < 0.100686685370811f ? (x - 0.092864f)/8.799461f : (_exp10f(((x - 0.384316f)/0.245281f))/5.555556f - 0.064829f/5.555556f);
 }
 
+/* Camera encodings not in upstream (DRT_OETF_APPLE_LOG and after), each from its maker's published formula.
+   Apple Log (Apple Log Profile White Paper): a square-root toe below Pt = c (Rt - R0)^2, R0 below code 0. */
+__DEVICE__ float drt_oetf_apple_log(float x) {
+  return x >= 0.208555315955f ? _exp2f((x - 0.69336945f)/0.08550479f) - 0.00964052f : (x >= 0.0f ? _sqrtf(x/47.28711236f) - 0.05641088f : -0.05641088f);
+}
+/* Canon Log 2 and Canon Log 3: Canon's curves give reflectance x 0.9 = scene linear, mirrored below black. */
+__DEVICE__ float drt_oetf_canon_log2(float x) {
+  return x < 0.092864125f ? -(_exp10f((0.092864125f - x)/0.24136077f) - 1.0f)/87.099375f*0.9f : (_exp10f((x - 0.092864125f)/0.24136077f) - 1.0f)/87.099375f*0.9f;
+}
+__DEVICE__ float drt_oetf_canon_log3(float x) {
+  return x < 0.097465473f ? -(_exp10f((0.12783901f - x)/0.36726845f) - 1.0f)/14.98325f*0.9f : (x <= 0.15277891f ? (x - 0.12512219f)/1.9754798f*0.9f : (_exp10f((x - 0.12240537f)/0.36726845f) - 1.0f)/14.98325f*0.9f);
+}
+/* Blackmagic Film Gen 5: natural log above the linear cut at 0.005 scene. */
+__DEVICE__ float drt_oetf_bmd_film_gen5(float x) {
+  return x < 0.133883783086671f ? (x - 0.0924657534246581f)/8.28360593240249f : _expf((x - 0.530013339229194f)/0.0869287606549122f) - 0.00549407243225781f;
+}
+/* DJI D-Log: the linear segment is the one that meets the log segment in value and slope at its break. */
+__DEVICE__ float drt_oetf_dji_dlog(float x) {
+  return x < 0.138583970393138f ? (x - 0.0929045490709614f)/6.02568345853766f : (_exp10f((x - 0.58455504907396f)/0.256662970719888f) - 0.0108f)/0.9892f;
+}
+
 /* Display-referred decodes (not in upstream; see DRT_OETF_REC1886 and friends).
    Sign-preserving so slightly negative code values do not turn into NaN. */
 __DEVICE__ float drt_eotf_power(float x, float p) {
@@ -292,7 +325,7 @@ __DEVICE__ float3 drt_linearize(float3 rgb, int tf) {
     rgb = drt_eotf_pq(rgb, 0)*100.0f;
   } else if (tf == 15) { /* HLG 1000 nits, 100 nits = 1.0 */
     rgb = drt_eotf_hlg(rgb, 0)*10.0f;
-  } else if (tf == 1) { /* Davinci Intermediate */
+  } else if (tf == 1) { /* DWG Intermediate */
     rgb.x = drt_oetf_davinci_intermediate(rgb.x);
     rgb.y = drt_oetf_davinci_intermediate(rgb.y);
     rgb.z = drt_oetf_davinci_intermediate(rgb.z);
@@ -328,6 +361,26 @@ __DEVICE__ float3 drt_linearize(float3 rgb, int tf) {
     rgb.x = drt_oetf_fujifilm_flog2(rgb.x);
     rgb.y = drt_oetf_fujifilm_flog2(rgb.y);
     rgb.z = drt_oetf_fujifilm_flog2(rgb.z);
+  } else if (tf == 22) { /* Apple Log (and Apple Log 2: the gamut differs) */
+    rgb.x = drt_oetf_apple_log(rgb.x);
+    rgb.y = drt_oetf_apple_log(rgb.y);
+    rgb.z = drt_oetf_apple_log(rgb.z);
+  } else if (tf == 23) { /* Canon Log 2 */
+    rgb.x = drt_oetf_canon_log2(rgb.x);
+    rgb.y = drt_oetf_canon_log2(rgb.y);
+    rgb.z = drt_oetf_canon_log2(rgb.z);
+  } else if (tf == 24) { /* Canon Log 3 */
+    rgb.x = drt_oetf_canon_log3(rgb.x);
+    rgb.y = drt_oetf_canon_log3(rgb.y);
+    rgb.z = drt_oetf_canon_log3(rgb.z);
+  } else if (tf == 25) { /* Blackmagic Film Gen 5 */
+    rgb.x = drt_oetf_bmd_film_gen5(rgb.x);
+    rgb.y = drt_oetf_bmd_film_gen5(rgb.y);
+    rgb.z = drt_oetf_bmd_film_gen5(rgb.z);
+  } else if (tf == 26) { /* DJI D-Log */
+    rgb.x = drt_oetf_dji_dlog(rgb.x);
+    rgb.y = drt_oetf_dji_dlog(rgb.y);
+    rgb.z = drt_oetf_dji_dlog(rgb.z);
   }
   return rgb;
 }
@@ -1039,7 +1092,7 @@ __DEVICE__ float3 drt_inverse_transform(DRT_PARAMS_ARG p, float3 enc) {
 /* ------------------------------------------------------- input transform */
 /* The media-side half (the "minColor Input" effect): linearise by p.in_oetf,
    take p.in_gamut to XYZ D65, land in the linear working gamut p.working_gamut.
-   With an inverse in_oetf entry (>= DRT_OETF_INVERSE_FIRST) the pixels are a
+   With an inverse in_oetf entry (DRT_OETF_IS_INVERSE) the pixels are a
    delivery made by this look through the display encoding the entry names (the
    host has already put that encoding into display_gamut / eotf / tn_su):
    drt_inverse_transform() takes them back to linear P3-D65; in_gamut is ignored.
@@ -1052,7 +1105,7 @@ __DEVICE__ float3 drt_input_transform(DRT_PARAMS_ARG p, float3 rgb) {
     make_float3(p.wk_m00, p.wk_m01, p.wk_m02),
     make_float3(p.wk_m10, p.wk_m11, p.wk_m12),
     make_float3(p.wk_m20, p.wk_m21, p.wk_m22));
-  if (p.in_oetf >= 16) { /* DRT_OETF_INVERSE_FIRST: any "OpenDRT inverse: <encoding>" entry */
+  if (p.in_oetf >= 16 && p.in_oetf < 22) { /* DRT_OETF_IS_INVERSE: any "OpenDRT inverse: <encoding>" entry */
     rgb = drt_inverse_transform(p, rgb);
     rgb = drt_vdot(drt_matrix_p3d65_to_xyz, rgb);
     rgb = drt_vdot(xyz_to_wk, rgb);

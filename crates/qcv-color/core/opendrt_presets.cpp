@@ -82,23 +82,25 @@ const char *const kInGamutNames[DRT_IN_GAMUT_COUNT] = {
     "XYZ", "ACES 2065-1", "ACEScg", "P3-D65", "Rec.2020", "Rec.709",
     "ARRI Wide Gamut 3", "ARRI Wide Gamut 4", "RED Wide Gamut RGB",
     "Sony S-Gamut3", "Sony S-Gamut3.Cine", "Panasonic V-Gamut",
-    "Filmlight E-Gamut", "Filmlight E-Gamut2", "DaVinci Wide Gamut",
+    "Filmlight E-Gamut", "Filmlight E-Gamut2", "DWG",
+    "Apple Wide Gamut", "Canon Cinema Gamut", "Blackmagic Wide Gamut Gen 5", "DJI D-Gamut",
 };
 
 const char *const kInOetfNames[DRT_OETF_COUNT] = {
-    "Linear", "DaVinci Intermediate", "Filmlight T-Log", "ACEScct", "ARRI LogC3",
+    "Linear", "DWG Intermediate", "Filmlight T-Log", "ACEScct", "ARRI LogC3",
     "ARRI LogC4", "RED Log3G10", "Panasonic V-Log", "Sony S-Log3", "Fuji F-Log2",
     "Rec.1886 (2.4 power)", "sRGB", "2.2 power", "BT.709 camera", "PQ (100 nits = 1.0)", "HLG 1000 nits",
     "OpenDRT inverse: Rec.1886", "OpenDRT inverse: sRGB Display", "OpenDRT inverse: Display P3",
     "OpenDRT inverse: Rec.2100 PQ", "OpenDRT inverse: Rec.2100 HLG", "OpenDRT inverse: Dolby PQ / P3-D65",
+    "Apple Log", "Canon Log 2", "Canon Log 3", "Blackmagic Film Gen 5", "DJI D-Log",
 };
 
 /* Which display preset each inverse entry undoes (kDisplays index). */
-const int kInverseDisplayMap[DRT_OETF_COUNT - DRT_OETF_INVERSE_FIRST] = { 0, 1, 2, 6, 7, 8 };
+const int kInverseDisplayMap[DRT_OETF_INVERSE_COUNT] = { 0, 1, 2, 6, 7, 8 };
 
 bool drt_inverse_display(DrtParams &p)
 {
-    if (p.in_oetf < DRT_OETF_INVERSE_FIRST || p.in_oetf >= DRT_OETF_COUNT) return false;
+    if (!DRT_OETF_IS_INVERSE(p.in_oetf)) return false;
     /* the encoding is what the file is; the surround is how it was viewed, and that
        stays on the Surround row (the host writes the preset's value there when the
        entry is picked, as the Output's Display preset does) */
@@ -184,6 +186,26 @@ void drt_apply_display(DrtParams &p, const DrtDisplay &d)
     p.eotf          = d.eotf;
     p.display_gamut = d.display_gamut;
     p.tn_su         = d.tn_su;
+}
+
+/* Grade 2 at rest: every control neutral, the six zones at the reference's HDR-palette defaults
+   (range in stops over grey, falloff as a fraction of the way to the end of the scale). */
+DrtGrade2Params drt_grade2_defaults()
+{
+    DrtGrade2Params g = {};
+    g.gain_r = g.gain_g = g.gain_b = 1.0f;
+    g.offset_r = g.offset_g = g.offset_b = 25.0f;
+    g.z0_sat = g.z1_sat = g.z2_sat = g.z3_sat = g.z4_sat = g.z5_sat = 1.0f;
+    g.z0_range = -4.0f; g.z0_falloff = 0.10f;   /* Black     */
+    g.z1_range = -1.5f; g.z1_falloff = 0.20f;   /* Dark      */
+    g.z2_range =  1.0f; g.z2_falloff = 0.22f;   /* Shadow    */
+    g.z3_range = -1.0f; g.z3_falloff = 0.22f;   /* Light     */
+    g.z4_range =  1.5f; g.z4_falloff = 0.20f;   /* Highlight */
+    g.z5_range =  4.0f; g.z5_falloff = 0.10f;   /* Specular  */
+    g.g_sat = 1.0f;
+    g.contrast = 1.0f;
+    g.s0_sat = g.s1_sat = g.s2_sat = 1.0f;   /* the secondary's wheels; one wheel, switched off */
+    return g;
 }
 
 DrtGradeParams drt_grade_defaults()

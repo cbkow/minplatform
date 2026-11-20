@@ -217,3 +217,34 @@ fn an_exported_cube_read_back_as_a_scene_lut_is_the_chain() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn mincolors_cameras_decode_as_ocios_do() {
+    // minColor 0.1.7's cameras (ruled 2026-11-19) against the shipped config's own spaces: the input → the scene interchange
+    // (ACES2065-1) → linear Rec.2020 → linear Rec.709, beside minColor un-tone-mapped (linear Rec.709, 1.0 = 100 nits).
+    // Greys prove the curve closely. Colours are held looser: the config adapts Canon, Blackmagic and DJI to the ACES white
+    // with CAT02 and comes back with Bradford, minColor never leaves D65 (the gamuts themselves are proven by their
+    // primaries in minColorAE's probe).
+    let Some(b) = open("Blender5.3") else { eprintln!("no configs — skipped"); return };
+    use crate::ids::*;
+    const TO_709: [f32; 9] = [1.6604910, -0.5876411, -0.0728499, -0.1245505, 1.1328999, -0.0083494, -0.0181508, -0.1005789, 1.1187297];
+    let mul = |m: &[f32; 9], v: [f32; 3]| [m[0] * v[0] + m[1] * v[1] + m[2] * v[2], m[3] * v[0] + m[4] * v[1] + m[5] * v[2], m[6] * v[0] + m[7] * v[1] + m[8] * v[2]];
+    let (mut worst_grey, mut worst_colour) = (0.0f32, 0.0f32);
+    for (input, gamut, transfer) in [("Apple Log", IN_REC2020, OETF_APPLE_LOG), ("Apple Log 2", IN_APPLE_WG, OETF_APPLE_LOG), ("CanonLog2 CinemaGamut D55", IN_CANON_CGAMUT, OETF_CANON_LOG2),
+        ("CanonLog3 CinemaGamut D55", IN_CANON_CGAMUT, OETF_CANON_LOG3), ("BMDFilm WideGamut Gen5", IN_BMD_WG_GEN5, OETF_BMD_FILM_GEN5), ("D-Log D-Gamut", IN_DJI_DGAMUT, OETF_DJI_DLOG)] {
+        let (chain, side) = Chain::build_scope(&b, input).unwrap_or_else(|e| panic!("{input}: {e}"));
+        assert_eq!(side, crate::Side::Scene, "{input}");
+        let blocks = crate::resolve(&crate::Chain { in_gamut: gamut, in_transfer: transfer, ..Default::default() }, false);
+        for (k, code) in [[0.05f32, 0.05, 0.05], [0.12, 0.12, 0.12], [0.2, 0.2, 0.2], [0.35, 0.35, 0.35], [0.5, 0.5, 0.5], [0.65, 0.65, 0.65], [0.8, 0.8, 0.8],
+            [0.5, 0.45, 0.4], [0.3, 0.42, 0.36], [0.4, 0.38, 0.55], [0.62, 0.5, 0.45]].into_iter().enumerate() {
+            let mut px = [code[0], code[1], code[2], 1.0]; chain.apply_cpu(&mut px);
+            let want = mul(&TO_709, mul(&crate::side_matrices(side).0, [px[0], px[1], px[2]]));
+            let got = crate::apply_cpu(&blocks, code);
+            let scale = want.iter().fold(0.0f32, |a, v| a.max(v.abs())).max(0.01);
+            let err = (0..3).map(|i| (got[i] - want[i]).abs() / scale).fold(0.0f32, f32::max);
+            if k < 7 { worst_grey = worst_grey.max(err); assert!(err < 2e-3, "{input}, grey code {code:?}: minColor {got:?} vs OCIO {want:?}"); }
+            else { worst_colour = worst_colour.max(err); assert!(err < 2e-2, "{input}, code {code:?}: minColor {got:?} vs OCIO {want:?}"); }
+        }
+    }
+    eprintln!("minColor's cameras vs the config: greys within {worst_grey:.1e}, colours within {worst_colour:.1e}");
+}

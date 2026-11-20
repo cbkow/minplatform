@@ -29,6 +29,16 @@ pub mod ids {
     pub const IN_REC709: i32 = 5;
     pub const OETF_LINEAR: i32 = 0;
     pub const OETF_REC1886: i32 = 10;
+    // the cameras of minColor 0.1.7 (appended after the core's other entries; a project stores these numbers)
+    pub const IN_APPLE_WG: i32 = 15;
+    pub const IN_CANON_CGAMUT: i32 = 16;
+    pub const IN_BMD_WG_GEN5: i32 = 17;
+    pub const IN_DJI_DGAMUT: i32 = 18;
+    pub const OETF_APPLE_LOG: i32 = 22;
+    pub const OETF_CANON_LOG2: i32 = 23;
+    pub const OETF_CANON_LOG3: i32 = 24;
+    pub const OETF_BMD_FILM_GEN5: i32 = 25;
+    pub const OETF_DJI_DLOG: i32 = 26;
 }
 
 impl Default for Chain {
@@ -52,6 +62,8 @@ unsafe extern "C" {
     fn mc_in_gamut_name(i: i32) -> *const std::ffi::c_char;
     fn mc_in_transfer_count() -> i32;
     fn mc_in_transfer_name(i: i32) -> *const std::ffi::c_char;
+    fn mc_in_gamut_at(pos: i32) -> i32;
+    fn mc_in_transfer_at(pos: i32) -> i32;
 }
 
 /// The derived GPU blocks: `DrtParams` in · `DrtParams` out · `DrtAgxParams` · flags, the bytes the kernel binds.
@@ -91,9 +103,11 @@ pub fn look_names() -> Vec<String> {
     unsafe { (0..mc_look_count()).map(|i| std::ffi::CStr::from_ptr(mc_look_name(i)).to_string_lossy().into_owned()).collect() }
 }
 
-/// The Input gamuts and transfers, by `DRT_IN_*` / `DRT_OETF_*` index (the non-inverse transfers only).
-pub fn input_gamut_names() -> Vec<String> { unsafe { (0..mc_in_gamut_count()).map(|i| std::ffi::CStr::from_ptr(mc_in_gamut_name(i)).to_string_lossy().into_owned()).collect() } }
-pub fn input_transfer_names() -> Vec<String> { unsafe { (0..mc_in_transfer_count()).map(|i| std::ffi::CStr::from_ptr(mc_in_transfer_name(i)).to_string_lossy().into_owned()).collect() } }
+/// The Input gamuts and transfers as (`DRT_IN_*` / `DRT_OETF_*` id, name), in the order they are SHOWN: a chain holds
+/// the id, and the position is not the id (the cameras added in minColor 0.1.7 have the highest ids and are shown with the
+/// other cameras). The transfers are the non-inverse ones only.
+pub fn input_gamuts() -> Vec<(i32, String)> { unsafe { (0..mc_in_gamut_count()).map(|p| { let id = mc_in_gamut_at(p); (id, std::ffi::CStr::from_ptr(mc_in_gamut_name(id)).to_string_lossy().into_owned()) }).collect() } }
+pub fn input_transfers() -> Vec<(i32, String)> { unsafe { (0..mc_in_transfer_count()).map(|p| { let id = mc_in_transfer_at(p); (id, std::ffi::CStr::from_ptr(mc_in_transfer_name(id)).to_string_lossy().into_owned()) }).collect() } }
 
 /// The generated kernel (the core through naga), for tests and inspection.
 pub const KERNEL_WGSL: &str = include_str!(concat!(env!("OUT_DIR"), "/mincolor.wgsl"));

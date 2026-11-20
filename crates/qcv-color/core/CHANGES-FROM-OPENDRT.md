@@ -20,7 +20,11 @@ None of them is part of, or endorsed by, OpenDRT.
 ## Additions to the rendering path
 
 - Display-referred input decodes (Rec.1886, sRGB, 2.2 power, BT.709 camera, PQ,
-  HLG) alongside upstream's camera log curves; a working-gamut stage for the
+  HLG) alongside upstream's camera log curves; camera encodings upstream does
+  not have, appended after everything else so no index moves (Apple Log, Canon
+  Log 2 and 3, Blackmagic Film Gen 5, DJI D-Log, with Apple Wide Gamut, Canon
+  Cinema Gamut, Blackmagic Wide Gamut Gen 5 and DJI D-Gamut; 0.1.7), each from
+  its maker's published formula and primaries; a working-gamut stage for the
   Input effect; limited (video) range expansion.
 - Sub-black codes decode to black for every EOTF (upstream only encodes).
 - An iterative inverse of the rendering (`drt_inverse_transform`), used by the

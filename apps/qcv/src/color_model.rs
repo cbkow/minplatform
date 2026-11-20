@@ -125,6 +125,7 @@ pub struct Preset { pub name: String, pub stored: Stored, pub builtin: bool }
 /// The built-ins (row 198: every built-in is minColor): QCView's minColor seeds with the per-output triples collapsed (one
 /// surface), plus the two display-referred readings a review meets most (Rec.709 video, sRGB).
 pub fn builtins() -> Vec<Preset> {
+    use qcv_color::ids as cam;
     let d = Chain::default();
     let mk = |name: &str, c: Chain| Preset { name: name.into(), stored: Stored { chain: ClipChain::MinColor(c), preset: name.into() }, builtin: true };
     vec![
@@ -138,6 +139,15 @@ pub fn builtins() -> Vec<Preset> {
         mk("Linear Rec.2020", Chain { in_gamut: id::REC2020, in_transfer: id::LINEAR, ..d }),
         mk("Linear Rec.2020 · AgX", Chain { in_gamut: id::REC2020, in_transfer: id::LINEAR, agx_on: 1, ..d }),
         mk("P3-D65 PQ master", Chain { in_gamut: id::P3D65, in_transfer: id::PQ, ..d }),
+        // camera originals (minColor 0.1.7; ruled 2026-11-19): a log file is scene light, so these come with AgX on - the
+        // rendering the drawer shows and switches (un-tone-mapped, everything above diffuse white would clip; an OpenDRT
+        // look is carried by a chain but has no control here)
+        mk("Apple Log", Chain { in_gamut: id::REC2020, in_transfer: cam::OETF_APPLE_LOG, agx_on: 1, ..d }),
+        mk("Apple Log 2", Chain { in_gamut: cam::IN_APPLE_WG, in_transfer: cam::OETF_APPLE_LOG, agx_on: 1, ..d }),
+        mk("Canon Log 2", Chain { in_gamut: cam::IN_CANON_CGAMUT, in_transfer: cam::OETF_CANON_LOG2, agx_on: 1, ..d }),
+        mk("Canon Log 3", Chain { in_gamut: cam::IN_CANON_CGAMUT, in_transfer: cam::OETF_CANON_LOG3, agx_on: 1, ..d }),
+        mk("Blackmagic Film Gen 5", Chain { in_gamut: cam::IN_BMD_WG_GEN5, in_transfer: cam::OETF_BMD_FILM_GEN5, agx_on: 1, ..d }),
+        mk("DJI D-Log", Chain { in_gamut: cam::IN_DJI_DGAMUT, in_transfer: cam::OETF_DJI_DLOG, agx_on: 1, ..d }),
     ]
 }
 
@@ -172,6 +182,21 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_camera_presets_keep_their_ids() {
+        // minColor 0.1.7's cameras (ruled 2026-11-19): what a project stores is the core's id, and each preset renders with AgX
+        let b = builtins();
+        for (name, gamut, transfer) in [("Apple Log", 4, 22), ("Apple Log 2", 15, 22), ("Canon Log 2", 16, 23), ("Canon Log 3", 16, 24), ("Blackmagic Film Gen 5", 17, 25), ("DJI D-Log", 18, 26)] {
+            let p = b.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("no built-in {name}"));
+            let ClipChain::MinColor(c) = &p.stored.chain else { panic!("{name} is not minColor") };
+            assert_eq!((c.in_gamut, c.in_transfer, c.open_drt, c.agx_on), (gamut, transfer, 0, 1), "{name}");
+            assert_eq!(Stored::from_map(&p.stored.to_map()), Some(p.stored.clone()), "{name}");
+            // the names the lists show for those ids are the cameras' own
+            assert!(qcv_color::input_transfers().iter().any(|(id, _)| *id == transfer) && qcv_color::input_gamuts().iter().any(|(id, _)| *id == gamut), "{name}");
+        }
+        assert_eq!(b[0].name, "Rec.709 video", "the fallback default is still the first");
+    }
+
     #[test]
     fn chains_round_trip_and_read_qcview_pins() {
         let agx = builtins().into_iter().find(|p| p.name == "Linear Rec.709 · AgX").unwrap().stored;

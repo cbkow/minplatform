@@ -27,6 +27,7 @@ namespace drt {
 #include "opendrt_params.h"
 #include "opendrt_kernel.h"
 #include "opendrt_grade.h"
+#include "mincolor_grade2.h"
 #include "mincolor_knee.h"
 #include "mincolor_agx.h"
 
@@ -35,6 +36,8 @@ static_assert(sizeof(DrtParams) == DRT_PARAMS_SCALARS * 4,
               "(see opendrt_params.h). Pad with the reserved_* slots.");
 static_assert(sizeof(DrtGradeParams) == DRT_GRADE_SCALARS * 4,
               "DrtGradeParams must stay a flat block of 4-byte scalars, count a multiple of 4.");
+static_assert(sizeof(DrtGrade2Params) == DRT_GRADE2_SCALARS * 4 && DRT_GRADE2_SCALARS % 4 == 0,
+              "DrtGrade2Params must stay a flat block of 4-byte scalars, count a multiple of 4.");
 static_assert(sizeof(DrtAgxParams) == DRT_AGX_SCALARS * 4 && DRT_AGX_SCALARS % 4 == 0,
               "DrtAgxParams must stay a flat block of 4-byte scalars, count a multiple of 4.");
 

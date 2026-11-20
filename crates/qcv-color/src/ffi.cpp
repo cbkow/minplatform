@@ -16,6 +16,18 @@ struct McGpu { drt::DrtParams in, out; drt::DrtAgxParams agx; McFlags flags; };
 
 namespace {
 int clamp_index(int v, int count) { return (v >= 0 && v < count) ? v : 0; }
+// A transfer QCView offers: every one but the "OpenDRT inverse" entries (the camera encodings of minColor 0.1.7 sit after them).
+int clamp_transfer(int v) { return (v >= 0 && v < DRT_OETF_COUNT && !DRT_OETF_IS_INVERSE(v)) ? v : 0; }
+// The order the lists are SHOWN in. A project stores the id, never the position, so the cameras added after the rest
+// are shown with the other cameras (After Effects stores the menu position, and has them at the end).
+const int kTransferOrder[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    DRT_OETF_APPLE_LOG, DRT_OETF_CANON_LOG2, DRT_OETF_CANON_LOG3, DRT_OETF_BMD_FILM_GEN5, DRT_OETF_DJI_DLOG,
+    10, 11, 12, 13, 14, 15 };
+const int kGamutOrder[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+    DRT_IN_APPLE_WG, DRT_IN_CANON_CGAMUT, DRT_IN_BMD_WG_GEN5, DRT_IN_DJI_DGAMUT,
+    12, 13, 14 };
+static_assert(sizeof(kTransferOrder) / sizeof(int) == DRT_OETF_COUNT - DRT_OETF_INVERSE_COUNT, "a transfer of the vendored core is not in QCView's list");
+static_assert(sizeof(kGamutOrder) / sizeof(int) == DRT_IN_GAMUT_COUNT, "a gamut of the vendored core is not in QCView's list");
 int agx_target_gamut(int t) { switch (t) { case 0: return DRT_IN_REC2020; case 2: return DRT_IN_P3D65; default: return DRT_IN_REC709; } }
 }
 
@@ -26,7 +38,7 @@ extern "C" void mc_resolve(const McChain *c, int capture, McGpu *g)
 {
     drt::DrtParams in = drt::drt_stickshift_defaults();
     in.in_gamut = clamp_index(c->in_gamut, DRT_IN_GAMUT_COUNT);
-    in.in_oetf = clamp_index(c->in_transfer, DRT_OETF_INVERSE_FIRST);
+    in.in_oetf = clamp_transfer(c->in_transfer);
     in.in_range = c->in_limited ? 1 : 0;
     in.working_gamut = DRT_IN_REC2020;
     in.kn_src = std::max(c->knee_src, 1.0f);
@@ -85,9 +97,12 @@ extern "C" void mc_apply(const McGpu *g, float *rgb)
 extern "C" int mc_look_count() { return drt::kLookCount; }
 extern "C" const char *mc_look_name(int i) { return (i >= 0 && i < drt::kLookCount) ? drt::kLooks[i].name : ""; }
 extern "C" const char *mc_in_gamut_name(int i) { return (i >= 0 && i < DRT_IN_GAMUT_COUNT) ? drt::kInGamutNames[i] : ""; }
-extern "C" const char *mc_in_transfer_name(int i) { return (i >= 0 && i < DRT_OETF_INVERSE_FIRST) ? drt::kInOetfNames[i] : ""; }
+extern "C" const char *mc_in_transfer_name(int i) { return (i >= 0 && i < DRT_OETF_COUNT && !DRT_OETF_IS_INVERSE(i)) ? drt::kInOetfNames[i] : ""; }
 extern "C" int mc_in_gamut_count() { return DRT_IN_GAMUT_COUNT; }
-extern "C" int mc_in_transfer_count() { return DRT_OETF_INVERSE_FIRST; }
+extern "C" int mc_in_transfer_count() { return int(sizeof(kTransferOrder) / sizeof(int)); }
+// the id shown at a list position (the names above are by id)
+extern "C" int mc_in_gamut_at(int pos) { return (pos >= 0 && pos < DRT_IN_GAMUT_COUNT) ? kGamutOrder[pos] : 0; }
+extern "C" int mc_in_transfer_at(int pos) { return (pos >= 0 && pos < mc_in_transfer_count()) ? kTransferOrder[pos] : 0; }
 
 // The Highlight Knee alone (the OCIO split's middle, canon row 204): the vendored core's knee fields, derived.
 extern "C" void mc_knee_params(float src_nits, float tgt_nits, float start, drt::DrtParams *out)

@@ -107,7 +107,7 @@ pub struct ColorDrawer {
     menu: Menu, menu_for: Option<String>,
     name_pop: Popover, name_field: TextField, naming: Option<Naming>,
     view: Option<View>,
-    gamut_names: Vec<String>, transfer_names: Vec<String>, look_names: Vec<String>,
+    gamut_names: Vec<(i32, String)>, transfer_names: Vec<(i32, String)>, look_names: Vec<String>,
     scale: f64,
 }
 
@@ -129,8 +129,9 @@ impl ColorDrawer {
     }
     /// `wf` = the waveform as last left: (scale override, HDR top in nits, open).
     pub fn new(open: bool, height: f64, wf: (Option<bool>, f32, bool)) -> ColorDrawer {
-        let mut gamut_names = qcv_color::input_gamut_names(); gamut_names.truncate(15);
-        let transfer_names = qcv_color::input_transfer_names();
+        // (id, name) in the order shown: the chain holds the id, the list the position
+        let gamut_names = qcv_color::input_gamuts();
+        let transfer_names = qcv_color::input_transfers();
         ColorDrawer {
             open, open_ramp: Ramp::new(if open { 1.0 } else { 0.0 }, t::RAIL_COLLAPSE_DURATION), height, rect: Rect::ZERO, split_hover: false, split_drag: None,
             tab: Rect::ZERO, tab_hover: false, tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), present: Ramp::new(0.0, t::ANIMATION_DURATION_SLIDE), clip_pill: Rect::ZERO, notes_open: false,
@@ -186,8 +187,8 @@ impl ColorDrawer {
         self.presets.set_selected(sel);
         self.preset_rows = acts;
         if let ClipChain::MinColor(c) = &v.stored.chain {
-            self.gamut.set_rows(self.gamut_names.iter().map(ListRow::item).collect()); self.gamut.set_selected(Some(c.in_gamut as usize));
-            self.transfer.set_rows(self.transfer_names.iter().map(ListRow::item).collect()); self.transfer.set_selected(Some(c.in_transfer as usize));
+            self.gamut.set_rows(self.gamut_names.iter().map(|(_, n)| ListRow::item(n)).collect()); self.gamut.set_selected(self.gamut_names.iter().position(|(id, _)| *id == c.in_gamut));
+            self.transfer.set_rows(self.transfer_names.iter().map(|(_, n)| ListRow::item(n)).collect()); self.transfer.set_selected(self.transfer_names.iter().position(|(id, _)| *id == c.in_transfer));
             // QCView's Rendering column: un-tone-mapped is what it offers; a chain carrying an OpenDRT look shows it; AgX on =
             // the picture formation has happened (its title says so)
             let mut r = vec![ListRow::item(tr("Un-tone-mapped"))];
@@ -469,8 +470,8 @@ impl ColorDrawer {
             if let Some(c) = c { cmds.push(edit(OcioChain { knee: qcv_color::Knee { enabled: c.knee_on != 0, source_nits: c.knee_src, target_nits: c.knee_tgt, start: c.knee_start }, ..o.clone() })); }
         }
         if mc {
-            let r = self.gamut.event(e, now, None); dirty |= r.dirty; if let Some(i) = r.clicked { cmds.extend(self.edited(|c| c.in_gamut = i as i32)); }
-            let r = self.transfer.event(e, now, None); dirty |= r.dirty; if let Some(i) = r.clicked { cmds.extend(self.edited(|c| c.in_transfer = i as i32)); }
+            let r = self.gamut.event(e, now, None); dirty |= r.dirty; if let Some(id) = r.clicked.and_then(|i| self.gamut_names.get(i)).map(|g| g.0) { cmds.extend(self.edited(|c| c.in_gamut = id)); }
+            let r = self.transfer.event(e, now, None); dirty |= r.dirty; if let Some(id) = r.clicked.and_then(|i| self.transfer_names.get(i)).map(|t| t.0) { cmds.extend(self.edited(|c| c.in_transfer = id)); }
             let (c, d) = self.knee.event(e, now, fonts); dirty |= d; if let Some(c) = c { cmds.extend(self.with_chain(c)); }
             let (c, d) = self.agx.event(e, now, fonts); dirty |= d; if let Some(c) = c { cmds.extend(self.with_chain(c)); }
         }

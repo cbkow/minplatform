@@ -85,7 +85,7 @@ extern const char *const  kInGamutNames[DRT_IN_GAMUT_COUNT];
 extern const char *const  kInOetfNames[DRT_OETF_COUNT];
 
 /* The DCTL's own defaults: DEFINE_UI_PARAMS values of the StickShift block, plus
-   the shipped selector defaults (DaVinci Wide Gamut / DaVinci Intermediate in,
+   the shipped selector defaults (DWG / DWG Intermediate in,
    Rec.1886 out, dim surround, clamp on). Equal to the Standard look. Not derived. */
 DrtParams drt_stickshift_defaults();
 
@@ -103,7 +103,7 @@ bool drt_inverse_display(DrtParams &p);
 extern const int kInverseDisplayMap[];
 
 /* Preset mode, as the DCTL's UI exposes it. Defaults here are the host-side choice
-   for a colour-managed compositor (linear ACEScg in), not the DCTL's Resolve
+   for a colour-managed compositor (linear ACEScg in), not the DCTL's own
    defaults; see drt_stickshift_defaults() for those. */
 struct DrtSettings {
     int   in_gamut  = DRT_IN_AP1;
@@ -123,8 +123,9 @@ struct DrtSettings {
    clamp forced on, creative white override, display preset), then drt_derive(). */
 DrtParams drt_resolve(const DrtSettings &s);
 
-/* Grade defaults: every corrector at identity, Resolve-like zone boundaries for a
+/* Grade defaults: every corrector at identity, six zone boundaries for a
    100-nit display, a 60-degree red secondary window switched off. Not derived. */
 DrtGradeParams drt_grade_defaults();
+DrtGrade2Params drt_grade2_defaults();   /* core/mincolor_grade2.h: neutral, zones at the reference's HDR defaults */
 
 } // namespace drt

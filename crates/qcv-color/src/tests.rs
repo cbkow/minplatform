@@ -45,8 +45,8 @@ fn inputs(hdr: bool) -> Vec<[f32; 3]> {
     v
 }
 
-fn transfer(name: &str) -> i32 { input_transfer_names().iter().position(|n| n.contains(name)).unwrap_or_else(|| panic!("no transfer {name}: {:?}", input_transfer_names())) as i32 }
-fn gamut(name: &str) -> i32 { input_gamut_names().iter().position(|n| n.contains(name)).unwrap_or_else(|| panic!("no gamut {name}: {:?}", input_gamut_names())) as i32 }
+fn transfer(name: &str) -> i32 { input_transfers().iter().find(|(_, n)| n.contains(name)).unwrap_or_else(|| panic!("no transfer {name}: {:?}", input_transfers())).0 }
+fn gamut(name: &str) -> i32 { input_gamuts().iter().find(|(_, n)| n.contains(name)).unwrap_or_else(|| panic!("no gamut {name}: {:?}", input_gamuts())).0 }
 
 #[test]
 fn kernel_matches_the_cpp_core() {
@@ -58,7 +58,14 @@ fn kernel_matches_the_cpp_core() {
         ("linear Rec.2020 + OpenDRT 1000 nits", Chain { in_gamut: ids::IN_REC2020, in_transfer: lin, open_drt: 1, peak_nits: 1000.0, ..Chain::default() }, true),
         ("linear Rec.709 + Knee 1000 → 100", Chain { in_transfer: lin, knee_on: 1, ..Chain::default() }, true),
     ];
-    if let Some(pq) = input_transfer_names().iter().position(|n| n.contains("PQ")) { chains.push(("P3 PQ + OpenDRT 100", Chain { in_gamut: gamut("P3"), in_transfer: pq as i32, open_drt: 1, ..Chain::default() }, false)); }
+    chains.push(("P3 PQ + OpenDRT 100", Chain { in_gamut: gamut("P3"), in_transfer: transfer("PQ"), open_drt: 1, ..Chain::default() }, false));
+    // the cameras of minColor 0.1.7: each curve and gamut through the generated kernel
+    for (name, g, t) in [("Apple Log", ids::IN_REC2020, ids::OETF_APPLE_LOG), ("Apple Log 2", ids::IN_APPLE_WG, ids::OETF_APPLE_LOG), ("Canon Log 2", ids::IN_CANON_CGAMUT, ids::OETF_CANON_LOG2),
+        ("Canon Log 3", ids::IN_CANON_CGAMUT, ids::OETF_CANON_LOG3), ("Blackmagic Film Gen 5", ids::IN_BMD_WG_GEN5, ids::OETF_BMD_FILM_GEN5), ("DJI D-Log", ids::IN_DJI_DGAMUT, ids::OETF_DJI_DLOG)] {
+        chains.push((name, Chain { in_gamut: g, in_transfer: t, open_drt: 1, ..Chain::default() }, false));
+        chains.push((name, Chain { in_gamut: g, in_transfer: t, agx_on: 1, ..Chain::default() }, false));
+        chains.push((name, Chain { in_gamut: g, in_transfer: t, ..Chain::default() }, false));
+    }
     for look in 1..look_names().len().min(4) as i32 { chains.push(("OpenDRT look", Chain { in_transfer: lin, open_drt: 1, look, ..Chain::default() }, true)); }
     let t0 = std::time::Instant::now();
     let _warm = MinColorPass::new(&dev, &q, Chain::default());
@@ -86,8 +93,19 @@ fn kernel_matches_the_cpp_core() {
 #[test]
 fn names_and_defaults() {
     assert!(look_names().len() >= 5, "{:?}", look_names());
-    assert_eq!(input_transfer_names()[ids::OETF_REC1886 as usize].contains("1886"), true, "{:?}", input_transfer_names());
-    assert!(input_gamut_names()[ids::IN_REC709 as usize].contains("709"), "{:?}", input_gamut_names());
+    assert_eq!(transfer("1886"), ids::OETF_REC1886, "{:?}", input_transfers());
+    assert_eq!(gamut("Rec.709"), ids::IN_REC709, "{:?}", input_gamuts());
+    // the lists: every id once, no "OpenDRT inverse" entry, the 0.1.7 cameras by the ids a project stores, shown with the other cameras
+    let (t, g) = (input_transfers(), input_gamuts());
+    assert_eq!((t.len(), g.len()), (21, 19));
+    assert!(t.iter().all(|(_, n)| !n.is_empty() && !n.contains("inverse")), "{t:?}");
+    for l in [&t, &g] { let mut ids: Vec<i32> = l.iter().map(|x| x.0).collect(); ids.sort(); ids.dedup(); assert_eq!(ids.len(), l.len()); }
+    assert_eq!((transfer("Apple Log"), transfer("Canon Log 2"), transfer("Canon Log 3"), transfer("Blackmagic"), transfer("DJI")), (ids::OETF_APPLE_LOG, ids::OETF_CANON_LOG2, ids::OETF_CANON_LOG3, ids::OETF_BMD_FILM_GEN5, ids::OETF_DJI_DLOG));
+    assert_eq!((gamut("Apple"), gamut("Canon"), gamut("Blackmagic"), gamut("DJI")), (ids::IN_APPLE_WG, ids::IN_CANON_CGAMUT, ids::IN_BMD_WG_GEN5, ids::IN_DJI_DGAMUT));
+    let pos = |n: &str| t.iter().position(|(_, x)| x.contains(n)).unwrap();
+    assert!(pos("F-Log2") < pos("Apple Log") && pos("DJI") < pos("Rec.1886"), "{t:?}");
+    // a project made before them still means what it meant: an id that is an inverse entry, or out of range, reads as Linear
+    assert_eq!(resolve(&Chain { in_transfer: 16, ..Chain::default() }, false).bytes(), resolve(&Chain { in_transfer: ids::OETF_LINEAR, ..Chain::default() }, false).bytes());
     // the default chain is the identity-ish conversion: Rec.1886 0.5 → 0.5^2.4 at 1.0 = 100 nits
     let y = apply_cpu(&resolve(&Chain::default(), false), [0.5, 0.5, 0.5]);
     assert!((y[0] - 0.5f32.powf(2.4)).abs() < 2e-3, "{y:?}");

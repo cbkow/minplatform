@@ -52,7 +52,14 @@
 #define DRT_IN_FILMLIGHT_EGAMUT 12
 #define DRT_IN_FILMLIGHT_EGAMUT2 13
 #define DRT_IN_DAVINCI_WG     14
-#define DRT_IN_GAMUT_COUNT    15
+/* Camera gamuts NOT in upstream (appended 2026-11-19 so the DCTL indices and saved projects stay).
+   All four have a D65 white; the matrices are the primaries' own, no adaptation. */
+#define DRT_IN_APPLE_WG       15  /* Apple Wide Gamut (Apple Log 2) */
+#define DRT_IN_CANON_CGAMUT   16  /* Canon Cinema Gamut */
+#define DRT_IN_BMD_WG_GEN5    17  /* Blackmagic Wide Gamut Gen 5 */
+#define DRT_IN_DJI_DGAMUT     18  /* DJI D-Gamut */
+#define DRT_IN_GAMUT_COUNT    19
+#define DRT_IN_GAMUT_UPSTREAM_COUNT 15 /* the ones the reference DCTL knows; the probe compares only these */
 
 /* in_oetf — upstream order. */
 #define DRT_OETF_LINEAR       0
@@ -79,7 +86,8 @@
    by this look through the named display encoding. Each entry names an encoding
    so the transfer popup fully describes the file; the host maps the entry onto
    display_gamut / eotf before deriving (drt_inverse_display()); tn_su (how the
-   master was viewed) stays a parameter. in_gamut is ignored for these. Anything >= DRT_OETF_INVERSE_FIRST is an inverse. */
+   master was viewed) stays a parameter. in_gamut is ignored for these. An inverse is DRT_OETF_INVERSE_FIRST up to,
+   not including, DRT_OETF_INVERSE_END (DRT_OETF_IS_INVERSE); the entries after them are camera encodings again. */
 #define DRT_OETF_INVERSE_FIRST    16
 #define DRT_OETF_INVERSE_REC1886  16  /* 2.4 power / Rec.709 */
 #define DRT_OETF_INVERSE_SRGB     17  /* 2.2 power / Rec.709 */
@@ -87,7 +95,18 @@
 #define DRT_OETF_INVERSE_PQ       19  /* ST 2084 / Rec.2020 (P3 limited) */
 #define DRT_OETF_INVERSE_HLG      20  /* HLG / Rec.2020 (P3 limited) */
 #define DRT_OETF_INVERSE_PQ_P3    21  /* ST 2084 / P3-D65 container (the Dolby display preset) */
-#define DRT_OETF_COUNT            22
+#define DRT_OETF_INVERSE_END      22
+#define DRT_OETF_INVERSE_COUNT    6
+#define DRT_OETF_IS_INVERSE(v)    ((v) >= DRT_OETF_INVERSE_FIRST && (v) < DRT_OETF_INVERSE_END)
+/* Camera encodings NOT in upstream, appended 2026-11-19 after the inverse entries: a saved project
+   holds these numbers (After Effects: the menu position), so nothing before them may move. Apple Log
+   is Rec.2020, Apple Log 2 the same curve on Apple Wide Gamut; both Canon curves go with Cinema Gamut. */
+#define DRT_OETF_APPLE_LOG        22
+#define DRT_OETF_CANON_LOG2       23
+#define DRT_OETF_CANON_LOG3       24
+#define DRT_OETF_BMD_FILM_GEN5    25
+#define DRT_OETF_DJI_DLOG         26
+#define DRT_OETF_COUNT            27
 #define DRT_OETF_UPSTREAM_COUNT 10 /* the ones the reference DCTL knows; the probe compares only these */
 
 /* display_gamut — upstream order. */

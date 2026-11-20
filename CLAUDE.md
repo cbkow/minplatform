@@ -1,7 +1,9 @@
 # minplatform — working notes for Claude
 
-- **State (2026-11-19):** this day minRender 1.0.2, QCBridge 0.5.0 and UFB 2.0.7 went out (their lines below); nothing is
-  being built. Phase 2 — `apps/qcv` is the QCView port (binary `QCView`). **QCView 3.0.3 is RELEASED on macOS
+- **State (2026-11-19):** this day minRender 1.0.2, QCBridge 0.5.0 and UFB 2.0.7 went out (their lines below). **BUILT,
+  NOT RELEASED: QCView 3.0.4 and minColorAE 0.1.7 (row 596)** - Apple Log / Log 2, Canon Log 2 / 3, Blackmagic Film Gen 5
+  and DJI D-Log in minColor, six presets; minColorAE's part is its branch `camera-logs-0.1.7` (not merged), the manual's
+  page is on QCView-Player's `3.0-release`; owed before a release: a look at real footage, After Effects, Windows. Phase 2 — `apps/qcv` is the QCView port (binary `QCView`). **QCView 3.0.3 is RELEASED on macOS
   and PACKED for the Store (2026-11-18, rows 554-583, tag `v3.0.3`: the pen path tool, container pixel aspect and Custom
   aspect, Export to minNotes, the audio tile, Blender 5.3; the last sections of `docs/phase2/handoff-2026-11-10.md`).**
   Before it: **QCView 3.0.2 was RELEASED on macOS**
