@@ -23,6 +23,10 @@ struct U {
   vp: vec4<f32>,         // the viewport size in px
   aids: vec4<f32>,       // the viewer aids (screen pass only): gain, 1/gamma, channel (0 RGB 1 R 2 G 3 B 4 A 5 Y), active
   media_b: vec4<f32>,    // stage 0, dual view: B's media rect in viewport px (zero size = none); bg.w = the seam's x (< 0 = none)
+  raw0: vec4<f32>,       // a raw mosaic's own colour data (bayer.wgsl): black, 1 / (white − black), the red and blue white-balance factors; y = 0: none
+  raw1: vec4<f32>,       // the matrix to linear Rec.2020, row 1 (w = the level all three channels are held to after the balance)
+  raw2: vec4<f32>,
+  raw3: vec4<f32>,
 };
 // Levels in code values (QCView yuv_planar.h): limited Y = (code − 16K)/(219K), C = (code − 128K)/(224K); full Y = code/fullMax, C = (code − mid)/fullMax.
 fn levels(yc: f32, uc: f32, vc: f32) -> vec3<f32> {

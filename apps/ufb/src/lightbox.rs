@@ -145,7 +145,7 @@ pub struct Lightbox { wake: Arc<dyn Fn() + Send + Sync>, pool: Pool, next: u64, 
 /// display-referred sRGB, half floats linear light).
 fn frame_of(f: Full) -> Frame {
     let (bps, code_bits, float) = match f.sample { 0 => (1, 8, false), 1 => (2, 16, false), _ => (2, 16, true) };
-    let meta = ColorMeta { matrix: Matrix::Identity, range: Range::Full, transfer: if float { Transfer::Linear } else { Transfer::Srgb }, primaries: Primaries::Bt709, bit_depth: if f.sample == 0 { 8 } else { 16 }, chroma: Chroma::Rgb, range_forced: false, rotation: 0, sar: (1, 1), mastering: None };
+    let meta = ColorMeta { matrix: Matrix::Identity, range: Range::Full, transfer: if float { Transfer::Linear } else { Transfer::Srgb }, primaries: Primaries::Bt709, bit_depth: if f.sample == 0 { 8 } else { 16 }, chroma: Chroma::Rgb, range_forced: false, rotation: 0, sar: (1, 1), mastering: None, raw: None };
     let (w, h, pitch, alpha) = (f.w, f.h, f.pitch, f.alpha);
     Frame { width: w, height: h, pixels: Pixels::Planar { planes: f.planes.into_iter().map(|p| Plane::owned(p, w, h, pitch)).collect(), layout: PlanarLayout::Rgb { bytes_per_sample: bps, code_bits, float, alpha, legal_expand: false } }, meta }
 }

@@ -1,8 +1,11 @@
 // One 16-bit plane holding a camera's raw MOSAIC (ProRes RAW through FFmpeg: bayer_rggb16le) — red at even x / even y,
 // blue at odd / odd, green at the other two. The colour is built HERE (QCView 2 did it on the CPU with swscale, 30 ms a
 // frame at 4224 x 3024, and named this pass as its follow-up): Malvar, He and Cutler's linear 5 x 5 filter ("High-quality
-// linear interpolation for demosaicing of Bayer-patterned color images", 2004), exact integer texel reads. The result is
-// the sensor's own linear RGB as the decoder left it: no camera matrix, as in QCView 2.
+// linear interpolation for demosaicing of Bayer-patterned color images", 2004), exact integer texel reads.
+// With the frame's own colour data (u.raw0..3, from the ProRes RAW frame header) the order is the header's: levels, white
+// balance at each site BEFORE the colour is built, the colour, then the camera's matrix and gain - the result is linear
+// Rec.2020. All three channels are held to one level after the balance, so a full sensor stays neutral. Without the data
+// the sensor's values are shown as they are (QCView 2 had no more).
 @group(0) @binding(0) var samp: sampler;
 @group(0) @binding(1) var tex: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> u: U;
@@ -12,7 +15,11 @@ fn site(p: vec2<i32>, d: vec2<i32>) -> f32 {
   var q = abs(p);
   let m = d - vec2(1, 1);
   q = m - abs(m - q);
-  return textureLoad(tex, q, 0).r;
+  let v = textureLoad(tex, q, 0).r;
+  if (u.raw0.y == 0.0) { return v; }
+  var k = 1.0;
+  if ((q.x & 1) == 0 && (q.y & 1) == 0) { k = u.raw0.z; } else if ((q.x & 1) == 1 && (q.y & 1) == 1) { k = u.raw0.w; }
+  return min((v - u.raw0.x) * u.raw0.y * k, u.raw1.w);
 }
 fn demosaic(p: vec2<i32>, d: vec2<i32>) -> vec3<f32> {
   let c = site(p, d);
@@ -43,5 +50,6 @@ fn demosaic(p: vec2<i32>, d: vec2<i32>) -> vec3<f32> {
   if (max(f.x, f.y) < 0.002) { rgb = demosaic(p, d); }
   else if (min(f.x, f.y) > 0.998) { rgb = demosaic(p + vec2(1, 1), d); }
   else { rgb = mix(mix(demosaic(p, d), demosaic(p + vec2(1, 0), d), f.x), mix(demosaic(p + vec2(0, 1), d), demosaic(p + vec2(1, 1), d), f.x), f.y); }
-  return finish(rgb_levels(rgb));
+  if (u.raw0.y == 0.0) { return finish(rgb_levels(rgb)); }
+  return finish(vec3(dot(u.raw1.xyz, rgb), dot(u.raw2.xyz, rgb), dot(u.raw3.xyz, rgb)));
 }

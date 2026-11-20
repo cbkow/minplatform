@@ -15,6 +15,23 @@ impl Matrix {
 /// Mastering display + content light levels when the container has them (HDR10 static metadata).
 #[derive(Clone, Copy, Debug, PartialEq)] pub struct Mastering { pub max_cll: u32, pub max_fall: u32, pub max_luminance: f32, pub min_luminance: f32 }
 
+/// A raw camera frame's own colour data (ProRes RAW's frame header, as FFmpeg hands it over): what turns the sensor's
+/// values into a defined space. Applied in stage 1 in the header's order - levels, white balance (before the colour is
+/// built), the matrix and the gain - and the result is LINEAR REC.2020 (`to_rec2020` = XYZ D65 -> Rec.2020 x the
+/// camera's RGB -> XYZ D65 matrix x the gain). Levels are on the plane's 0..1 scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RawColor { pub black: f32, pub white: f32, /// the red and the blue factor (green is 1)
+    pub wb: [f32; 2], pub to_rec2020: [f32; 9] }
+impl RawColor {
+    /// The level every channel is held to after the white balance: a sensor that is full reads the same in all three, so
+    /// a blown highlight stays neutral instead of taking the colour of the largest factor.
+    pub fn clip(&self) -> f32 { self.wb[0].min(self.wb[1]).min(1.0) }
+    /// One site's value on the plane's scale -> balanced sensor light (`site`: 0 red, 1 green, 2 blue).
+    pub fn balance(&self, v: f32, site: usize) -> f32 { let l = (v - self.black) / (self.white - self.black).max(1e-6); (l * match site { 0 => self.wb[0], 2 => self.wb[1], _ => 1.0 }).min(self.clip()) }
+    /// Balanced sensor RGB -> linear Rec.2020.
+    pub fn matrix(&self, c: [f32; 3]) -> [f32; 3] { let m = &self.to_rec2020; [m[0] * c[0] + m[1] * c[1] + m[2] * c[2], m[3] * c[0] + m[4] * c[1] + m[5] * c[2], m[6] * c[0] + m[7] * c[1] + m[8] * c[2]] }
+}
+
 /// What stage 1 needs to reach linear working RGB, and what stage 3 needs to know about the source.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct ColorMeta {
@@ -28,6 +45,8 @@ pub struct ColorMeta {
     /// Sample aspect ratio; (1, 1) for square pixels.
     pub sar: (u32, u32),
     pub mastering: Option<Mastering>,
+    /// a raw camera frame's colour data (a `PlanarLayout::Bayer` frame); None = the values are shown as they are
+    pub raw: Option<RawColor>,
 }
 impl ColorMeta {
     /// The shader's transfer / matrix / primaries selectors (one float each — the uniform block is tiny and proven).
@@ -61,7 +80,8 @@ pub enum PlanarLayout {
     /// unclamped, untransformed; `premultiplied` = the frame's flag (else straight alpha, premultiplied in the shader).
     RgbaF16 { premultiplied: bool },
     /// ONE 16-bit plane holding a camera's raw mosaic in the RGGB order (FFmpeg's `bayer_rggb16le`: ProRes RAW). The colour
-    /// is built in stage 1 (`bayer.wgsl`); the values are the sensor's linear RGB, full range, no matrix.
+    /// is built in stage 1 (`bayer.wgsl`), with the frame's own colour data when it has it (`ColorMeta::raw`): linear
+    /// Rec.2020 then, else the sensor's linear RGB as it is.
     Bayer { code_bits: u32 },
 }
 

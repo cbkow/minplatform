@@ -11,7 +11,11 @@ struct U { fit: [f32; 2], code_max: f32, level_k: f32, full_max: f32, chroma_mid
     /// the viewer aids (canon row 204): gain = 2^exposure, 1 / gamma, channel (0 RGB · 1 R · 2 G · 3 B · 4 A · 5 Y), active
     aids: [f32; 4],
     /// stage 0 in dual view: B's media rect in px (zero = none); `bg[3]` is the seam's x (Split wipe: A counts left of it, B from it; < 0 = no seam)
-    media_b: [f32; 4] }
+    media_b: [f32; 4],
+    /// a raw mosaic's own colour data (`ColorMeta::raw`; bayer.wgsl): [0] = black, 1 / (white - black), the red and the blue
+    /// white-balance factor; [1..4] = the rows of the matrix to linear Rec.2020, each row's w = the common clip level.
+    /// All zero = none (the values are shown as they are).
+    raw: [[f32; 4]; 4] }
 
 /// What a colour chain consumes and produces: linear BT.709 working RGB, or display-encoded RGB with a transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -571,12 +575,12 @@ impl Engine {
         // dual view: the footprint is the two pictures' own rects per compare mode (QCView's `insideMedia`), not this engine's
         let (media, media_b, seam) = match self.dual.as_ref() { Some(d) => d.media_rects(), None => (self.media_rect_px(), [0.0; 4], -1.0) };
         self.queue.write_buffer(&self.bg_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [self.out_gain, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, rot: 0.0,
-            bg: [self.bg_mode as f32, self.bg_mix[m], 32.0 * self.ui_scale, seam], media, vp: [self.viewport.0 as f32, self.viewport.1 as f32, 0.0, 0.0], media_b }));
+            bg: [self.bg_mode as f32, self.bg_mix[m], 32.0 * self.ui_scale, seam], media, vp: [self.viewport.0 as f32, self.viewport.1 as f32, 0.0, 0.0], media_b, raw: [[0.0; 4]; 4] }));
     }
     fn write_overlay_uniform(&self) {
         // the UI never passes through "encoded": a PQ-master-on-PQ-surface passthrough still PQ-encodes the UI's linear light
         let out = if self.display.out == OutMode::Encoded { OutMode::Pq } else { self.display.out };
-        self.queue.write_buffer(&self.overlay_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [self.out_gain, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4], media_b: [0.0; 4] }));
+        self.queue.write_buffer(&self.overlay_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [self.out_gain, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4], media_b: [0.0; 4], raw: [[0.0; 4]; 4] }));
     }
     #[cfg(windows)]
     /// The `ID3D12Device` for a D3D12VA decoder context (one reference added for the caller).
@@ -652,7 +656,8 @@ impl Engine {
         let meta = self.effective_meta(b.meta);
         let (trc, _, prim) = meta.selectors();
         let l = b.levels;
-        let u = |fit: [f32; 2], off: [f32; 2], out: OutMode| U { fit, off, pad1: [0.0, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: l.code_max, level_k: l.level_k, full_max: l.full_max, chroma_mid: l.chroma_mid, full_range: l.full_range as u8 as f32, kr: l.kr, kb: l.kb, src_transfer: trc, src_primaries: prim, out_mode: out.sel(), white: self.display.white, is_rgb: l.is_rgb as u8 as f32, rgb_expand: l.rgb_expand as u8 as f32, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4], media_b: [0.0; 4] };
+        let raw = match meta.raw { Some(r) => { let (m, c) = (r.to_rec2020, r.clip()); [[r.black, 1.0 / (r.white - r.black).max(1e-6), r.wb[0], r.wb[1]], [m[0], m[1], m[2], c], [m[3], m[4], m[5], c], [m[6], m[7], m[8], c]] } None => [[0.0; 4]; 4] };
+        let u = |fit: [f32; 2], off: [f32; 2], out: OutMode| U { raw, fit, off, pad1: [0.0, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: l.code_max, level_k: l.level_k, full_max: l.full_max, chroma_mid: l.chroma_mid, full_range: l.full_range as u8 as f32, kr: l.kr, kb: l.kb, src_transfer: trc, src_primaries: prim, out_mode: out.sel(), white: self.display.white, is_rgb: l.is_rgb as u8 as f32, rgb_expand: l.rgb_expand as u8 as f32, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4], media_b: [0.0; 4] };
         // a PQ master on a PQ surface passes through encoded — bit-exact, no EOTF round trip
         let display_out = if self.display.out == OutMode::Pq && meta.transfer == Transfer::Pq { OutMode::Encoded } else { self.display.out };
         let chain_in = match self.color_pass.as_ref().map(|c| c.input()) { Some(Space::Encoded(_)) => OutMode::Encoded, _ => OutMode::Linear };
@@ -669,7 +674,7 @@ impl Engine {
         let in_trc = match self.color_pass.as_ref().map(|c| c.output()) { Some(Space::Encoded(t)) => ColorMeta { transfer: t, ..Default::default() }.selectors().0, _ => 4.0 };
         let blit_out = if display_out == OutMode::Encoded { OutMode::Pq } else { display_out };
         let rotq = self.rotation_quarters() as f32;
-        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [self.out_gain, if self.video_emu { 1.0 } else { 0.0 }], aids: self.aids.gpu(), code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, rot: rotq, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4], media_b: [0.0; 4] }));
+        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [self.out_gain, if self.video_emu { 1.0 } else { 0.0 }], aids: self.aids.gpu(), code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, rot: rotq, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4], media_b: [0.0; 4], raw: [[0.0; 4]; 4] }));
     }
     fn binds(&self, variant: Variant, views: &[wgpu::TextureView]) -> Vec<wgpu::BindGroup> {
         let (layout, ub) = (&self.layouts[variant as usize], 1 + variant.textures());
@@ -1286,6 +1291,20 @@ mod tests {
         e.show(&mosaic(&ramp)).unwrap();
         let (d, _, _) = e.snapshot(Snapshot::Encoded).unwrap();
         for y in 2..h - 2 { for x in 2..w - 2 { let (px, want) = (&d[((y * w + x) * 4) as usize..][..3], ramp(x, y)); for c in 0..3 { assert!((px[c] - want[c]).abs() < 2e-3, "an even change at ({x}, {y}), channel {c}: {px:?} vs {want:?}"); } } }
+        // with the frame's own colour data (a ProRes RAW header's shape: a black level, factors, a matrix with a gain) the
+        // stage ends in linear Rec.2020: the same numbers as the CPU's (`RawColor`), above 1 where the gain takes them
+        let raw = RawColor { black: 256.0 / 65535.0, white: 65520.0 / 65535.0, wb: [1.8, 1.4], to_rec2020: [1.9, 0.4, 0.2, 0.1, 2.6, -0.3, 0.05, -0.2, 3.1] };
+        let with = |f: Frame| Frame { meta: ColorMeta { raw: Some(raw), primaries: crate::Primaries::Bt2020, ..f.meta }, ..f };
+        let q = |v: f32| (v * 65535.0).round() / 65535.0;   // the value the 16-bit plane holds
+        for colour in [[0.30f32, 0.45, 0.20], [0.02, 0.01, 0.03], [0.9, 0.95, 0.99]] {
+            e.show(&with(mosaic(&|_, _| colour))).unwrap();
+            let (d, _, _) = e.snapshot(Snapshot::Encoded).unwrap();
+            let want = raw.matrix([raw.balance(q(colour[0]), 0), raw.balance(q(colour[1]), 1), raw.balance(q(colour[2]), 2)]);
+            for (i, px) in d.chunks(4).enumerate() { for c in 0..3 { assert!((px[c] - want[c]).abs() < 3e-3 * want[c].abs().max(1.0), "camera colour, {colour:?}, pixel {i}, channel {c}: {px:?} vs {want:?}"); } }
+        }
+        // a full sensor is neutral after the balance: every channel held to the same level (1.0 here: both factors are above 1)
+        assert_eq!(raw.clip(), 1.0);
+        assert_eq!([raw.balance(1.0, 0), raw.balance(1.0, 1), raw.balance(1.0, 2)], [1.0, 1.0, 1.0]);
     }
 
     /// values above 1 and below 0 pass unclamped into the linear path; straight alpha is premultiplied, premultiplied passes.

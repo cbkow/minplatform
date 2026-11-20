@@ -383,6 +383,14 @@ impl VideoThumbLoaderSws {
         for v in rgb.iter_mut() { *v = u16::from_le(*v); }
         // RGB sources tagged limited: rgb_range's 16–235 rule, at 16 bits
         if crate::rgb_range::rgb_frame_needs_legal_expansion(fr, self.range) { for v in rgb.iter_mut() { *v = (((*v as i64 - 4096) * 65535 + 28032) / 56064).clamp(0, 65535) as u16; } }
+        // a raw camera frame (ProRes RAW): swscale has built the colour from the mosaic; the frame's own colour data then takes
+        // it to linear Rec.2020 as the viewport's stage 1 does (levels, white balance, matrix, gain) - as half floats, since
+        // the gain puts highlights above 1. (The balance comes after the colour here, before it on the GPU: the same, both
+        // being per-channel scalings, up to the clip.)
+        if let Some(raw) = crate::ffmpeg::raw_color(&*fr) {
+            let half: Vec<u16> = rgb.chunks_exact(3).flat_map(|c| { let b = [raw.balance(c[0] as f32 / 65535.0, 0), raw.balance(c[1] as f32 / 65535.0, 1), raw.balance(c[2] as f32 / 65535.0, 2)]; raw.matrix(b).map(|v| half::f16::from_f32(v).to_bits()) }).collect();
+            return Some(ThumbPixels { width: ow as u32, height: oh as u32, samples: ThumbSamples::Half(half) })
+        }
         Some(ThumbPixels { width: ow as u32, height: oh as u32, samples: ThumbSamples::Code16(rgb) })
     } }
 }

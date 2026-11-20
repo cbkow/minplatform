@@ -132,7 +132,14 @@ pub fn mincolor_ahead(device: &wgpu::Device, queue: &wgpu::Queue) -> mpsc::Recei
 /// what its pixels are — Rec.2020 (P3-D65 when tagged so) / PQ (100 nits = 1.0: QCBridge's Blender wire, and minColor's only PQ).
 /// Nothing is stored until the user edits (the edit keeps it); the project default and an own chain are untouched; OCIO left
 /// alone (a PQ input's name is the config's).
+/// The same nudge for a camera raw clip (the user 2026-11-19, row 598): ProRes RAW reaches the chain as linear Rec.2020 - its
+/// frames' own colour data is applied before it - so with no chain of its own it starts from the project default with the
+/// input set to that. Nothing is stored until the user edits.
 fn stream_nudge(item: &qcv_project::MediaItem, mut d: Stored) -> Stored {
+    if item.media_type == qcv_project::MediaType::Video && item.video.video_codec == "prores_raw" {
+        if let ClipChain::MinColor(c) = &mut d.chain { c.in_gamut = qcv_color::ids::IN_REC2020; c.in_transfer = qcv_color::ids::OETF_LINEAR; c.in_limited = 0; }
+        return d
+    }
     if item.media_type != qcv_project::MediaType::LiveStream || item.video.color_transfer != "smpte2084" { return d }
     if let ClipChain::MinColor(c) = &mut d.chain {
         let p = item.video.color_primaries.to_lowercase();

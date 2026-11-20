@@ -190,7 +190,7 @@ impl Drop for SequenceDecoder {
 /// QCView's still pipeline is RGB at full range; 8 / 16-bit stills are display-referred sRGB, half floats linear light.
 fn rgb_meta(s: Sample) -> ColorMeta {
     ColorMeta { matrix: Matrix::Identity, range: Range::Full, transfer: if s == Sample::F16 { Transfer::Linear } else { Transfer::Srgb }, primaries: Primaries::Bt709,
-        bit_depth: match s { Sample::U8 => 8, _ => 16 }, chroma: Chroma::Rgb, range_forced: false, rotation: 0, sar: (1, 1), mastering: None }
+        bit_depth: match s { Sample::U8 => 8, _ => 16 }, chroma: Chroma::Rgb, range_forced: false, rotation: 0, sar: (1, 1), mastering: None, raw: None }
 }
 
 /// A cached frame as the presenter's planar RGB frame, its planes read in place.

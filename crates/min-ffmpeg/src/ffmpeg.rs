@@ -84,6 +84,25 @@ pub fn av_err(e: i32) -> String { let mut b = [0i8; 128]; unsafe { ff::av_strerr
 fn averror(e: i32) -> i32 { -e }
 fn cstr(p: *const std::ffi::c_char) -> String { if p.is_null() { String::new() } else { unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned() } }
 
+/// A raw frame's own colour data (FFmpeg's `AVRawColorParams`, from the ProRes RAW frame header): levels on the 16-bit
+/// scale, the white-balance factors, and the camera's matrix to XYZ D65 with its gain, taken on to linear Rec.2020.
+pub fn raw_color(f: &ff::AVFrame) -> Option<min_present::RawColor> { unsafe {
+    let sd = ff::av_frame_get_side_data(f, ff::AVFrameSideDataType::AV_FRAME_DATA_RAW_COLOR_PARAMS);
+    if sd.is_null() || (*sd).data.is_null() { return None }
+    let p = &*((*sd).data as *const ff::AVRawColorParams);
+    if p.type_ != ff::AVRawColorParamsType::AV_RAW_COLOR_PARAMS_PRORES_RAW { return None }
+    let q = |r: ff::AVRational| if r.den != 0 { r.num as f64 / r.den as f64 } else { 0.0 };
+    let pr = &p.codec.prores_raw;
+    let (black, white, gain) = (q(p.black_level), q(p.white_level), q(pr.gain));
+    let mut cam = [0f64; 9]; for r in 0..3 { for c in 0..3 { cam[r * 3 + c] = q(pr.color_matrix[r][c]); } }
+    // nothing usable (an all-zero header): show the values as they are rather than a black picture
+    if white <= black || gain <= 0.0 || cam.iter().all(|v| *v == 0.0) || q(pr.wb_red) <= 0.0 || q(pr.wb_blue) <= 0.0 { return None }
+    // CIE XYZ (D65) -> linear Rec.2020
+    const X: [f64; 9] = [1.7166511880, -0.3556707838, -0.2533662814, -0.6666843518, 1.6164812366, 0.0157685458, 0.0176398574, -0.0427706133, 0.9421031212];
+    let mut m = [0f32; 9]; for r in 0..3 { for c in 0..3 { m[r * 3 + c] = ((0..3).map(|k| X[r * 3 + k] * cam[k * 3 + c]).sum::<f64>() * gain) as f32; } }
+    Some(min_present::RawColor { black: black as f32, white: white as f32, wb: [q(pr.wb_red) as f32, q(pr.wb_blue) as f32], to_rec2020: m })
+} }
+
 fn meta_from(ctx: &ff::AVCodecContext, format: ff::AVPixelFormat, over: RangeOverride) -> ColorMeta {
     use ff::{AVColorPrimaries as P, AVColorTransferCharacteristic as T};
     let (depth, cw, ch, rgb) = unsafe { let d = ff::av_pix_fmt_desc_get(format); if d.is_null() { (8, 1, 1, false) } else { ((*d).comp[0].depth as u32, (*d).log2_chroma_w, (*d).log2_chroma_h, ((*d).flags as i32 & ff::AV_PIX_FMT_FLAG_RGB) != 0) } };
@@ -92,7 +111,7 @@ fn meta_from(ctx: &ff::AVCodecContext, format: ff::AVPixelFormat, over: RangeOve
     let primaries = match ctx.color_primaries { P::AVCOL_PRI_BT2020 => Primaries::Bt2020, P::AVCOL_PRI_SMPTE432 | P::AVCOL_PRI_SMPTE431 => Primaries::P3D65, _ => Primaries::Bt709 };
     let chroma = if rgb { Chroma::Rgb } else { match (cw, ch) { (1, 1) => Chroma::C420, (1, 0) => Chroma::C422, _ => Chroma::C444 } };
     let sar = if ctx.sample_aspect_ratio.num > 0 && ctx.sample_aspect_ratio.den > 0 { (ctx.sample_aspect_ratio.num as u32, ctx.sample_aspect_ratio.den as u32) } else { (1, 1) };
-    ColorMeta { matrix, range: yuv_planar::effective_source_range(ctx.color_range, rgb, over), range_forced: over != RangeOverride::Auto, transfer, primaries, bit_depth: depth, chroma, rotation: 0, sar, mastering: None }
+    ColorMeta { matrix, range: yuv_planar::effective_source_range(ctx.color_range, rgb, over), range_forced: over != RangeOverride::Auto, transfer, primaries, bit_depth: depth, chroma, rotation: 0, sar, mastering: None, raw: None }
 }
 
 impl Session {
@@ -186,7 +205,10 @@ impl Session {
                 // the pixel aspect as the container has it too (a QuickTime `pasp` never reaches the codec context: an anamorphic ProRes read 1:1 here while the Inspector, which asks this same question, said 2:1)
                 let g = ff::av_guess_sample_aspect_ratio(fmt, st, ptr::null_mut()); if g.num > 0 && g.den > 0 { m.sar = (g.num as u32, g.den as u32); }
                 // and the turn a phone writes beside its picture (the display matrix): it was never read, so Rotation's Auto turned nothing
-                m.rotation = qcv_meta::rotation_from_stream(st) as u16; m }, duration_secs, tags: {
+                m.rotation = qcv_meta::rotation_from_stream(st) as u16;
+                // ProRes RAW: what a frame is once its own colour data has been applied (planes_from, raw_color) - linear Rec.2020
+                if (*cctx).codec_id == ff::AVCodecID::AV_CODEC_ID_PRORES_RAW { m.transfer = Transfer::Linear; m.primaries = min_present::Primaries::Bt2020; m.matrix = Matrix::Identity; m.range = Range::Full; }
+                m }, duration_secs, tags: {
                 let n = |p: *const std::ffi::c_char| { let v = cstr(p); if v == "unknown" || v == "unspecified" { String::new() } else { v } };
                 (n(ff::av_color_transfer_name((*codecpar).color_trc)), n(ff::av_color_primaries_name((*codecpar).color_primaries)), n(ff::av_color_space_name((*codecpar).color_space)))
             } };
@@ -360,8 +382,10 @@ impl Session {
         let (w, h) = (f.width as u32, f.height as u32);
         if !self.logged_planes { log::info!("CPU publish path — pix_fmt={} ({w}x{h}) → GPU planes{}", self.info.pix_fmt, if l.bayer { " (raw mosaic, colour on the GPU)" } else if l.rgb { " (planar RGB)" } else { "" }); self.logged_planes = true; }
         let layout = if l.bayer {
-            // the sensor's linear RGB once stage 1 has made it colour: no matrix, full range, linear light whatever the tags say
+            // linear light whatever the tags say, no YUV matrix, full range; with the frame's own colour data (the ProRes RAW
+            // header) stage 1 ends in linear Rec.2020, without it the sensor's RGB is shown as it is
             meta.matrix = Matrix::Identity; meta.chroma = Chroma::Rgb; meta.transfer = Transfer::Linear; meta.range = Range::Full;
+            meta.raw = raw_color(f); if meta.raw.is_some() { meta.primaries = min_present::Primaries::Bt2020; }
             PlanarLayout::Bayer { code_bits: l.code_bits }
         } else if l.rgb {
             meta.matrix = Matrix::Identity; meta.chroma = Chroma::Rgb; if l.float && meta.transfer == Transfer::Bt1886 { meta.transfer = Transfer::Linear }
