@@ -60,6 +60,9 @@ pub enum PlanarLayout {
     /// ONE packed RGBA half-float plane (a QCBridge host frame, canon row 228): the host's working-space values as sent —
     /// unclamped, untransformed; `premultiplied` = the frame's flag (else straight alpha, premultiplied in the shader).
     RgbaF16 { premultiplied: bool },
+    /// ONE 16-bit plane holding a camera's raw mosaic in the RGGB order (FFmpeg's `bayer_rggb16le`: ProRes RAW). The colour
+    /// is built in stage 1 (`bayer.wgsl`); the values are the sensor's linear RGB, full range, no matrix.
+    Bayer { code_bits: u32 },
 }
 
 /// A platform frame the GPU can sample without a copy. `handle` is the OS object (macOS: `CVPixelBufferRef`;

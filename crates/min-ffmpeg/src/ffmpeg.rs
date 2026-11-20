@@ -358,8 +358,12 @@ impl Session {
         let l = yuv_planar::layout_for(format);
         if !l.ok { return Err(Error::PixFmt(cstr(ff::av_get_pix_fmt_name(format)))) }
         let (w, h) = (f.width as u32, f.height as u32);
-        if !self.logged_planes { log::info!("CPU publish path — pix_fmt={} ({w}x{h}) → GPU planes{}", self.info.pix_fmt, if l.rgb { " (planar RGB)" } else { "" }); self.logged_planes = true; }
-        let layout = if l.rgb {
+        if !self.logged_planes { log::info!("CPU publish path — pix_fmt={} ({w}x{h}) → GPU planes{}", self.info.pix_fmt, if l.bayer { " (raw mosaic, colour on the GPU)" } else if l.rgb { " (planar RGB)" } else { "" }); self.logged_planes = true; }
+        let layout = if l.bayer {
+            // the sensor's linear RGB once stage 1 has made it colour: no matrix, full range, linear light whatever the tags say
+            meta.matrix = Matrix::Identity; meta.chroma = Chroma::Rgb; meta.transfer = Transfer::Linear; meta.range = Range::Full;
+            PlanarLayout::Bayer { code_bits: l.code_bits }
+        } else if l.rgb {
             meta.matrix = Matrix::Identity; meta.chroma = Chroma::Rgb; if l.float && meta.transfer == Transfer::Bt1886 { meta.transfer = Transfer::Linear }
             PlanarLayout::Rgb { bytes_per_sample: l.bytes, code_bits: l.code_bits, float: l.float, alpha: l.alpha, legal_expand: rgb_range::rgb_frame_needs_legal_expansion(f, self.range_override) }
         } else { PlanarLayout::Ycc { bytes_per_sample: l.bytes, code_bits: l.code_bits, interleaved_chroma: l.interleaved, alpha: l.alpha } };

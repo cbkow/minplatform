@@ -57,7 +57,8 @@ impl crate::App {
         let Some(g) = self.gpu.as_mut() else { return self.thumb_color[slot].generation };
         // the Video emulation as the slot's picture has it on screen (canon row 262: thumbnails carry it too)
         let emu = on && crate::color::slot_engine(g, slot, self.dual.is_some()).is_some_and(|e| e.video_emulation());
-        let key = format!("{chain_key}|{:?}|{emu}", meta.map(|m| (m.transfer, m.primaries)));
+        // the file's turn is part of the look: two clips with the same tags and different turns must not share the first one's
+        let key = format!("{chain_key}|{:?}|{emu}", meta.map(|m| (m.transfer, m.primaries, m.rotation)));
         let tc = &mut self.thumb_color[slot];
         if tc.engine.is_none() { tc.engine = Some(Engine::new(g.presenter.engine.device.clone(), g.presenter.engine.queue.clone(), wgpu::TextureFormat::Rgba16Float)); }
         // a pass landing

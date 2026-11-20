@@ -77,8 +77,9 @@ impl Default for DisplayMode { fn default() -> Self { DisplayMode { out: OutMode
 
 /// The stage-1 pipelines: QCView's three kernels (planar, biplanar, packed 4444) plus the alpha-plane planar form.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)] enum Variant { Planar3, Planar4, Biplanar, Packed, /// one RGBA16F plane (a QCBridge host frame)
-    PackedRgba }
-impl Variant { fn textures(self) -> u32 { match self { Variant::Planar3 => 3, Variant::Planar4 => 4, Variant::Biplanar => 2, Variant::Packed | Variant::PackedRgba => 1 } } }
+    PackedRgba, /// one 16-bit raw mosaic plane, made colour in the shader (ProRes RAW)
+    Bayer }
+impl Variant { fn textures(self) -> u32 { match self { Variant::Planar3 => 3, Variant::Planar4 => 4, Variant::Biplanar => 2, Variant::Packed | Variant::PackedRgba | Variant::Bayer => 1 } } }
 const N_U: usize = 5;   // 0 display · 1 chain-in (1:1) · 2 encoded 1:1 · 3 linear 1:1 · 4 display 1:1 (the display snapshot)
 
 /// QCView's `YuvPlanarDesc` constants for the shader: levels in code values for any depth / alignment, the matrix as Kr / Kb.
@@ -109,6 +110,7 @@ fn planar_spec(layout: PlanarLayout, meta: &ColorMeta) -> (Levels, Variant, Vec<
         }
         // a host frame: values as sent; `rgb_expand` carries the frame's premultiplied flag to packed_rgba.wgsl (unused there otherwise)
         PlanarLayout::RgbaF16 { premultiplied } => (Levels { rgb_expand: premultiplied, ..Levels::float_rgb() }, Variant::PackedRgba, vec![wgpu::TextureFormat::Rgba16Float]),
+        PlanarLayout::Bayer { code_bits } => (Levels::new(code_bits, 2, true, Matrix::Identity), Variant::Bayer, vec![wgpu::TextureFormat::R16Unorm]),
         PlanarLayout::Ycc { bytes_per_sample, code_bits, interleaved_chroma, alpha } => {
             let l = Levels::new(code_bits, bytes_per_sample, meta.range == Range::Full, meta.matrix);
             let (one, two) = if bytes_per_sample == 2 { (wgpu::TextureFormat::R16Unorm, wgpu::TextureFormat::Rg16Unorm) } else { (wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm) };
@@ -283,8 +285,8 @@ impl Engine {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, target_format: wgpu::TextureFormat) -> Engine {
         let stages = include_str!("shaders/stages.wgsl");
         let module = |label: &str, body: &str| device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(format!("{stages}\n{body}").into()) });
-        let bodies = [include_str!("shaders/planar3.wgsl"), include_str!("shaders/planar4.wgsl"), include_str!("shaders/biplanar.wgsl"), include_str!("shaders/packed.wgsl"), include_str!("shaders/packed_rgba.wgsl")];
-        let variants = [Variant::Planar3, Variant::Planar4, Variant::Biplanar, Variant::Packed, Variant::PackedRgba];
+        let bodies = [include_str!("shaders/planar3.wgsl"), include_str!("shaders/planar4.wgsl"), include_str!("shaders/biplanar.wgsl"), include_str!("shaders/packed.wgsl"), include_str!("shaders/packed_rgba.wgsl"), include_str!("shaders/bayer.wgsl")];
+        let variants = [Variant::Planar3, Variant::Planar4, Variant::Biplanar, Variant::Packed, Variant::PackedRgba, Variant::Bayer];
         let tex = |b| wgpu::BindGroupLayoutEntry { binding: b, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None };
         let smp = wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None };
         let ub = |b| wgpu::BindGroupLayoutEntry { binding: b, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None };
@@ -1261,6 +1263,31 @@ mod tests {
     }
 
     /// Row 228: a QCBridge host frame (one packed RGBA16F plane) reaches the screen as stored (tagged sRGB = bypass as stored):
+    /// A camera's raw mosaic (ProRes RAW: one RGGB plane) is made colour in stage 1: a flat colour comes back flat, and a
+    /// picture that changes evenly comes back as it is - away from the edges, where the filter mirrors.
+    #[test]
+    fn a_raw_mosaic_is_made_colour() {
+        let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
+        e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 });
+        let (w, h) = (32u32, 24u32);
+        let mosaic = |colour: &dyn Fn(u32, u32) -> [f32; 3]| -> Frame {
+            let pitch = (w * 2).div_ceil(256) * 256; let mut data = vec![0u8; (pitch * h) as usize];
+            for y in 0..h { for x in 0..w {
+                let c = colour(x, y); let v = match (x & 1, y & 1) { (0, 0) => c[0], (1, 1) => c[2], _ => c[1] };   // red at even / even, blue at odd / odd
+                let o = (y * pitch + x * 2) as usize; data[o..o + 2].copy_from_slice(&((v * 65535.0).round() as u16).to_le_bytes());
+            } }
+            Frame { width: w, height: h, pixels: Pixels::Planar { planes: vec![Plane::owned(data, w, h, pitch)], layout: PlanarLayout::Bayer { code_bits: 16 } }, meta: ColorMeta { matrix: Matrix::Identity, range: Range::Full, transfer: Transfer::Linear, chroma: crate::Chroma::Rgb, bit_depth: 16, ..Default::default() } }
+        };
+        e.show(&mosaic(&|_, _| [0.8, 0.5, 0.2])).unwrap();
+        let (d, dw, dh) = e.snapshot(Snapshot::Encoded).unwrap();
+        assert_eq!((dw, dh), (w, h));
+        for (i, px) in d.chunks(4).enumerate() { assert!((px[0] - 0.8).abs() < 2e-3 && (px[1] - 0.5).abs() < 2e-3 && (px[2] - 0.2).abs() < 2e-3, "flat colour at pixel {i}: {px:?}"); }
+        let ramp = |x: u32, y: u32| [0.1 + 0.02 * x as f32, 0.6 - 0.01 * x as f32 + 0.01 * y as f32, 0.05 + 0.03 * y as f32];
+        e.show(&mosaic(&ramp)).unwrap();
+        let (d, _, _) = e.snapshot(Snapshot::Encoded).unwrap();
+        for y in 2..h - 2 { for x in 2..w - 2 { let (px, want) = (&d[((y * w + x) * 4) as usize..][..3], ramp(x, y)); for c in 0..3 { assert!((px[c] - want[c]).abs() < 2e-3, "an even change at ({x}, {y}), channel {c}: {px:?} vs {want:?}"); } } }
+    }
+
     /// values above 1 and below 0 pass unclamped into the linear path; straight alpha is premultiplied, premultiplied passes.
     #[test]
     fn host_frames_show_as_stored() {

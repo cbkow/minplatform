@@ -18,13 +18,17 @@ use min_present::{Matrix, Range};
 /// Layout of a supported format, independent of frame size.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Layout { pub ok: bool, pub plane_count: usize, pub interleaved: bool, pub alpha: bool, /// planar RGB (FFmpeg gbrp*: G, B, R [, A] planes)
-    pub rgb: bool, pub float: bool, pub bytes: u32, pub code_bits: u32, pub shift_x: u32, pub shift_y: u32, pub data_index: [usize; 4] }
+    pub rgb: bool, /// ONE plane of a camera's raw mosaic, RGGB, 16-bit (ProRes RAW): made colour on the GPU
+    pub bayer: bool, pub float: bool, pub bytes: u32, pub code_bits: u32, pub shift_x: u32, pub shift_y: u32, pub data_index: [usize; 4] }
 
 /// True for the YUV layouts the GPU converts: 8–16-bit, 4:2:0 / 4:2:2 / 4:4:4, planar with optional alpha, or NV12-style
 /// interleaved chroma; little-endian, not float. Planar RGB (gbrp*, 8–16-bit and half float) is added for the platform
 /// (QCView converts RGB through swscale + `rgb_range.h`). Everything else is unsupported here.
 pub fn layout_for(fmt: ff::AVPixelFormat) -> Layout {
     let mut l = Layout { data_index: [0, 1, 2, 3], ..Default::default() };
+    // a raw mosaic: the ONE order the patched ProRes RAW decoder is proven on (QCView dependencies.md, patch 0003: an
+    // iPhone clip is right only as RGGB); any other order stays unsupported rather than shown in wrong colours
+    if fmt == ff::AVPixelFormat::AV_PIX_FMT_BAYER_RGGB16LE { l.plane_count = 1; l.bytes = 2; l.code_bits = 16; l.bayer = true; l.ok = true; return l }
     let d = unsafe { ff::av_pix_fmt_desc_get(fmt) };
     if d.is_null() { return l }
     let d = unsafe { &*d };
@@ -109,6 +113,9 @@ mod tests {
     use ff::AVPixelFormat as P;
     #[test] fn untagged_is_bt709_at_every_size() { assert_eq!(effective_matrix(ff::AVColorSpace::AVCOL_SPC_UNSPECIFIED), Matrix::Bt709); assert_eq!(effective_matrix(ff::AVColorSpace::AVCOL_SPC_SMPTE170M), Matrix::Bt601); assert_eq!(effective_matrix(ff::AVColorSpace::AVCOL_SPC_BT2020_NCL), Matrix::Bt2020); }
     #[test] fn layouts() {
+        // a raw mosaic (ProRes RAW): the one order the decoder is proven on is ONE 16-bit plane made colour on the GPU; the others stay refused
+        let l = layout_for(P::AV_PIX_FMT_BAYER_RGGB16LE); assert!(l.ok && l.bayer && l.plane_count == 1 && l.bytes == 2 && l.code_bits == 16 && !l.rgb);
+        assert!(!layout_for(P::AV_PIX_FMT_BAYER_BGGR16LE).ok && !layout_for(P::AV_PIX_FMT_BAYER_RGGB8).ok);
         let l = layout_for(P::AV_PIX_FMT_YUV422P10LE); assert!(l.ok && l.plane_count == 3 && !l.interleaved && l.bytes == 2 && l.code_bits == 10 && l.shift_x == 1 && l.shift_y == 0);
         let l = layout_for(P::AV_PIX_FMT_YUVA444P12LE); assert!(l.ok && l.plane_count == 4 && l.alpha && l.code_bits == 12 && l.data_index[3] == 3);
         let l = layout_for(P::AV_PIX_FMT_NV12); assert!(l.ok && l.interleaved && l.plane_count == 2 && l.code_bits == 8);
