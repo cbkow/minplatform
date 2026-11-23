@@ -2187,7 +2187,9 @@ impl Ui {
         if cfg!(windows) && self.screen_checked.is_none_or(|t| t.elapsed().as_secs_f32() >= 2.0) {
             self.screen_checked = Some(Instant::now());
             let name = self.window.current_monitor().and_then(|m| m.name().map(|n| n.to_string())).unwrap_or_default();
-            if self.presenter.follow_screen(&name).1 { self.lb_key = None; self.window.request_redraw(); }
+            let (hdr, changed) = self.presenter.follow_screen(&name);
+            // (a line in the log each time it changes: what a look at the screen is checked against)
+            if changed { eprintln!("UFB: the screen {name}: HDR {hdr:?}, white x{:.2}, {}", self.presenter.engine.output_gain(), if self.presenter.sdr_surface() { "the 10-bit sRGB surface" } else { "the fp16 scRGB surface" }); self.lb_key = None; self.window.request_redraw(); }
         }
         if self.lightbox.is_open() { return self.redraw_lightbox() }
         let now = Instant::now(); let (ink, sub) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
