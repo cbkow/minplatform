@@ -44,10 +44,15 @@ fn dirs(dir: &Path) -> std::io::Result<Vec<(String, PathBuf, i64)>> {
     out.sort_by(|a, b| crate::model::natural_key(&a.0).cmp(&crate::model::natural_key(&b.0)));
     Ok(out)
 }
+/// A job's sections in the order of its strip: those its type names, in the type's order; the others after them, by name
+/// as they were read (row 600).
+fn in_type_order(mut sections: Vec<String>, ty: &ufb_projtype::ProjectType) -> Vec<String> {
+    sections.sort_by_key(|s| ty.sections.iter().position(|t| t.folder.eq_ignore_ascii_case(s)).unwrap_or(usize::MAX)); sections
+}
 /// The job's sections, and the items of `want` (the first section when there is no such one).
 pub fn read(job: &Path, want: Option<&str>) -> Read {
     let Ok(tops) = dirs(job) else { return Read { missing: true, ..Default::default() } };
-    let sections: Vec<String> = tops.iter().map(|t| t.0.clone()).collect();
+    let sections = in_type_order(tops.iter().map(|t| t.0.clone()).collect(), &type_for(job).ty);
     let section = want.and_then(|w| sections.iter().find(|s| s.eq_ignore_ascii_case(w))).or(sections.first()).cloned();
     let all = section.as_ref().and_then(|s| dirs(&job.join(s)).ok()).unwrap_or_default(); let names = all.iter().map(|d| d.0.clone()).collect();
     let items = all.into_iter().filter(|(n, ..)| is_item_name(n)).map(|(name, path, modified)| { let (project, renders) = targets(&path); let proxies = named(&path, &PROXY_NAMES); Item { name, path, modified, project, renders, proxies } }).collect::<Vec<Item>>();
@@ -193,10 +198,11 @@ mod tests {
         for d in ["3d/sh010/project", "3d/sh010/renders", "3d/sh020", "3d/_t_project_name", "3d/assets", "ae/000000_x", "ae/title", ".ufb/backups", "docs"] { std::fs::create_dir_all(job.join(d)).unwrap(); }
         std::fs::write(job.join("notes.txt"), "x").unwrap(); std::fs::write(job.join("3d").join("file.txt"), "x").unwrap();
         let r = read(&job, None);
-        assert_eq!(r.sections, ["3d", "ae", "docs"], "no dot folder, no file"); assert_eq!(r.section.as_deref(), Some("3d"));
+        assert_eq!(r.sections, ["ae", "3d", "docs"], "no dot folder, no file; the type's order"); assert_eq!(r.section.as_deref(), Some("ae"));
+        let r = read(&job, Some("3d"));
         assert_eq!(r.items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), ["assets", "sh010", "sh020"], "the placeholder and the file are no items");
         let r = read(&job, Some("AE")); assert_eq!(r.section.as_deref(), Some("ae")); assert_eq!(r.items.len(), 1);
-        let r = read(&job, Some("gone")); assert_eq!(r.section.as_deref(), Some("3d"), "a section that is not there: the first");
+        let r = read(&job, Some("gone")); assert_eq!(r.section.as_deref(), Some("ae"), "a section that is not there: the first");
         assert!(read(&job.join("nope"), None).missing);
         // an item with a project and a renders folder shows them; one without shows itself
         assert_eq!(targets(&job.join("3d/sh010")), (job.join("3d/sh010/project"), job.join("3d/sh010/renders")));

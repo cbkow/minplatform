@@ -266,7 +266,7 @@ mod tests {
     fn the_builtin_type_is_the_layout_of_1_4_2() {
         let t = ProjectType::builtin();
         let kinds: Vec<(&str, Kind)> = t.sections.iter().map(|s| (s.folder.as_str(), s.kind)).collect();
-        assert_eq!(kinds, vec![("3d", Kind::Shot), ("ae", Kind::Shot), ("assets", Kind::Dated), ("audition", Kind::None), ("docs", Kind::Folder),
+        assert_eq!(kinds, vec![("ae", Kind::Shot), ("3d", Kind::Shot), ("assets", Kind::Dated), ("audition", Kind::None), ("docs", Kind::Folder),
             ("illustrator", Kind::Shot), ("photoshop", Kind::Shot), ("postings", Kind::Dated), ("premiere", Kind::Shot)]);
         assert_eq!(t.kind("AE"), Kind::Shot);             // by name, without regard to case
         assert_eq!(t.kind("Audition"), Kind::None);

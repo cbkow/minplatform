@@ -14,16 +14,18 @@ job_name = "{number}_{name}"
 #          type: text (when none is written), dropdown, date, priority, number, checkbox, links, notes;
 #          options: for a dropdown or a priority - a name, or a name and its colour as #rrggbb.
 
+# The order of the sections here is the order of a job's folder strip (row 600); a job's folders the type does not name
+# follow, by name. After Effects is first: it is the master program (the owner, 2026-11-23); 1.4.2 had them by name.
+[[section]]
+folder = "ae"
+kind = "shot"
+skeleton = "ae"
+
 [[section]]
 folder = "3d"
 kind = "shot"
 skeleton = "3d"
 folders = ["assets"]
-
-[[section]]
-folder = "ae"
-kind = "shot"
-skeleton = "ae"
 
 [[section]]
 folder = "assets"
