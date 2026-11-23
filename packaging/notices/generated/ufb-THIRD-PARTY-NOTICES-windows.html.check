@@ -36,6 +36,7 @@ file libOpenEXRCore*.dylib
 file libav*.dylib
 file liblzma.dll
 file libsw*.dylib
+file libz.dll
 file minNotes
 file minRender
 file minRender.exe

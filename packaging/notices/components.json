@@ -139,7 +139,8 @@
       ],
       "files": [
         "z.dll",
-        "zlib1.dll"
+        "zlib1.dll",
+        "libz.dll"
       ]
     },
     {
