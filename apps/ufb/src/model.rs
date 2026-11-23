@@ -207,6 +207,15 @@ impl Model {
         if !self.nodes.get(id as usize).is_some_and(|n| n.dir) { return false }
         match self.opened.get_mut(&id) { Some(o) => { o.expanded = true; false } None => { self.opened.insert(id, Opened { state: Kids::Loading, children: vec![], expanded: true }); true } }
     }
+    /// A folder is read WITHOUT being opened, to see what it holds. True when its entries have to be read (the caller
+    /// starts that); false when it is read, being read or open already.
+    pub fn peek(&mut self, id: u32) -> bool {
+        if !self.nodes.get(id as usize).is_some_and(|n| n.dir) || self.opened.contains_key(&id) { return false }
+        self.opened.insert(id, Opened { state: Kids::Loading, children: vec![], expanded: false }); true
+    }
+    /// How many rows a folder read to its end comes to as the view is set (a sequence shown as one is one row); none
+    /// while it is not read.
+    pub fn rows_inside(&self, id: u32) -> Option<usize> { let o = self.opened.get(&id)?; (o.state == Kids::Loaded).then(|| o.children.iter().filter(|c| self.shows(**c)).count()) }
     /// A folder opened in place is closed: its rows go, what was read of it is kept for the next opening.
     pub fn collapse(&mut self, id: u32) { if let Some(o) = self.opened.get_mut(&id) { o.expanded = false; } }
     /// The folders opened in place, as paths of names from the folder in view.

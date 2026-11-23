@@ -27,6 +27,11 @@ pub enum Mode { List, Grid }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Load { Loading, Ready, Failed(String) }
 
+/// A folder looked into is shown open when it comes to this many rows at most (row 601).
+const TIDY: usize = 8;
+/// A root of more folders than this is not looked into; so many are read at a time.
+const PEEKED: usize = 64; const PEEKS_AT_ONCE: usize = 4;
+
 pub struct Pane {
     /// the folder this pane does not leave upward (a job's chosen item, row 486): Up stops there; none in the browser
     pub root: Option<PathBuf>,
@@ -61,6 +66,10 @@ pub struct Pane {
     split: Vec<PathBuf>, forced: Vec<Vec<PathBuf>>,
     /// a double click on a file (the row): the lightbox, or the default application (the window decides); "Open" on a file: the default application
     pub preview: Option<usize>, pub open_default: Option<PathBuf>,
+    /// the folders of this pane's ROOT are opened in place where that stays tidy (a 3D item's renders, row 601): each is
+    /// read, and shown open when it comes to [`TIDY`] rows at most. Those being read for it, those waiting their turn,
+    /// and the ones a hand closed (by name: they stay closed until the pane is given to another folder)
+    tidy: bool, peeked: std::collections::HashSet<u32>, peek_next: std::collections::VecDeque<u32>, shut: std::collections::HashSet<String>,
     pub rect: Rect, scale: f64,
 }
 
@@ -135,7 +144,7 @@ pub fn set_cut(paths: &[PathBuf]) { *CUT.lock().unwrap() = paths.to_vec(); CUT_A
 
 impl Pane {
     pub fn new(path: PathBuf, port: &Port) -> Pane {
-        let mut p = Pane { viewed: None, view_was: String::new(), found: None, root: None, cols: vec![0, 1, 2, 3], col_layout: ColLayout::all(), col_kind: None, history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, inner: vec![], reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, split: vec![], forced: vec![], preview: None, open_default: None, rect: Rect::ZERO, scale: 1.0 };
+        let mut p = Pane { viewed: None, view_was: String::new(), found: None, root: None, cols: vec![0, 1, 2, 3], col_layout: ColLayout::all(), col_kind: None, history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, inner: vec![], reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, split: vec![], forced: vec![], preview: None, open_default: None, tidy: false, peeked: Default::default(), peek_next: Default::default(), shut: Default::default(), rect: Rect::ZERO, scale: 1.0 };
         p.read(port, None, vec![]); p
     }
     pub fn path(&self) -> &Path { self.history.current() }
@@ -155,7 +164,7 @@ impl Pane {
     /// Read the current folder anew. `restore`: what to choose and where to scroll once it is read.
     fn read(&mut self, port: &Port, restore: Option<Look>, reopen: Vec<Vec<String>>) {
         for (_, (_, cancel)) in self.reqs.drain() { cancel.store(true, Ordering::Relaxed); }
-        self.recall_view();
+        self.recall_view(); self.peeked.clear(); self.peek_next.clear();
         self.model.clear(); self.model.tree = self.mode == Mode::List; self.model.rebuild();
         self.table.sel.reset(); self.grid.sel.reset(); self.table.sel.resize(0); self.grid.sel.resize(0); self.table.bar.offset = 0.0; self.grid.bar.offset = 0.0;
         self.free = None; self.inner.clear(); self.load = Load::Loading; self.restore = restore; self.reopen = reopen; self.chosen = (0, 0); self.probe = None; self.search.clear(); self.found = None;
@@ -209,7 +218,8 @@ impl Pane {
     pub fn can_up(&self) -> bool { self.history.parent().is_some() && self.root.as_ref().is_none_or(|r| self.path() != r && self.path().starts_with(r)) }
     /// The pane is given to a folder it does not leave upward, and starts at `at` inside it with a history of its own:
     /// Back cannot lead out of it (row 486).
-    pub fn rooted(&mut self, port: &Port, root: PathBuf, at: PathBuf) { self.root = Some(root); self.history = History::new(at); self.read(port, None, vec![]); }
+    /// `tidy`: its folders are opened in place where each comes to a few rows (row 601).
+    pub fn rooted(&mut self, port: &Port, root: PathBuf, at: PathBuf, tidy: bool) { self.tidy = tidy; self.shut.clear(); self.root = Some(root); self.history = History::new(at); self.read(port, None, vec![]); }
     pub fn go(&mut self, port: &Port, path: PathBuf) { let look = self.look(); if self.history.go(path, look) { self.read(port, None, vec![]); } }
     /// To a folder, with one of its entries chosen and in view once it is read (a link to a file, row 503).
     pub fn go_select(&mut self, port: &Port, dir: PathBuf, name: String) {
@@ -261,6 +271,17 @@ impl Pane {
         let rows: Vec<usize> = names.iter().filter_map(|n| self.model.find_top(n)).filter_map(|id| self.model.row_of(id)).collect();
         let first = rows.iter().copied().min(); let s = self.sel_mut(); s.set(rows); s.cursor = first; s.anchor = first; self.count();
     }
+    /// The root's folders are looked into (row 601): in the list, at the root itself, as many as [`PEEKED`] - a root of
+    /// more folders is left as it is. A few are read at a time; each is shown open when it is read, if it is tidy.
+    fn peek_folders(&mut self, port: &Port) {
+        if !self.tidy || self.mode != Mode::List || self.found.is_some() || self.root.as_deref() != Some(self.path()) { return }
+        let dirs: Vec<u32> = (0..self.model.len()).filter_map(|i| self.model.row(i)).filter(|id| { let n = self.model.node(*id); n.depth == 0 && n.dir && !n.package && !self.shut.contains(&*n.name) }).collect();
+        if dirs.len() > PEEKED { return }
+        self.peek_next = dirs.into(); self.peek_more(port);
+    }
+    fn peek_more(&mut self, port: &Port) {
+        while self.peeked.len() < PEEKS_AT_ONCE { let Some(id) = self.peek_next.pop_front() else { break }; if self.model.peek(id) { self.peeked.insert(id); self.read_inside(port, id); } }
+    }
     /// Start reading a folder opened in place.
     fn read_inside(&mut self, port: &Port, id: u32) { let (req, cancel) = (lister::next_req(), Arc::new(AtomicBool::new(false))); self.reqs.insert(req, (id, cancel.clone())); lister::list(port, req, self.model.path_of(id, self.path()), cancel); }
     /// After a refresh: open again, as their parents are read, the folders that were open.
@@ -291,9 +312,12 @@ impl Pane {
                     self.load = Load::Ready; self.mtime = mtime; self.free = free; self.listed = true;
                     if let Some(look) = self.restore.take() { self.choose(&look.selected); if self.mode == Mode::List { self.table.bar.offset = look.scroll; } else { self.grid.bar.offset = look.scroll; } if look.scroll == 0.0 { if let Some(c) = self.sel().cursor { self.reveal_later(c); } } }
                 }
-                self.reopen(port); self.keep(|_| {});
+                self.reopen(port);
+                // a folder looked into is read: open, when it is tidy - it holds something, and a few rows at most
+                if parent == TOP { self.peek_folders(port); } else if self.peeked.remove(&parent) { if self.model.rows_inside(parent).is_some_and(|n| (1..=TIDY).contains(&n)) { self.model.expand(parent); } self.peek_more(port); }
+                self.keep(|_| {});
             }
-            Some(Msg::Failed { why, .. }) => { self.reqs.remove(&req); if parent == TOP { self.load = Load::Failed(why.clone()); } self.keep(|model| model.set_state(parent, Kids::Failed(why))); }
+            Some(Msg::Failed { why, .. }) => { self.reqs.remove(&req); if self.peeked.remove(&parent) { self.peek_more(port); } if parent == TOP { self.load = Load::Failed(why.clone()); } self.keep(|model| model.set_state(parent, Kids::Failed(why))); }
             _ => {}
         }
         true
@@ -332,8 +356,8 @@ impl Pane {
     pub fn scroll_to(&mut self, row: usize) { self.reveal_later(row); }
 
     /// Open a folder in place (the list).
-    pub fn expand(&mut self, port: &Port, row: usize) { let Some(id) = self.model.row(row) else { return }; let mut read = false; self.keep(|m| read = m.expand(id)); if read { self.read_inside(port, id); } }
-    pub fn collapse(&mut self, row: usize) { if let Some(id) = self.model.row(row) { self.keep(|m| m.collapse(id)); } }
+    pub fn expand(&mut self, port: &Port, row: usize) { let Some(id) = self.model.row(row) else { return }; self.shut.remove(&*self.model.node(id).name); self.peeked.remove(&id); let mut read = false; self.keep(|m| read = m.expand(id)); if read { self.read_inside(port, id); } }
+    pub fn collapse(&mut self, row: usize) { if let Some(id) = self.model.row(row) { if self.tidy && self.model.node(id).depth == 0 { self.shut.insert(self.model.node(id).name.to_string()); } self.keep(|m| m.collapse(id)); } }
     /// A double click, the open key: a folder is gone into. A file: nothing yet (the lightbox is a later slice; the system is NOT asked to open it).
     pub fn activate(&mut self, port: &Port, row: usize) { if let Some(id) = self.model.row(row) { if self.model.node(id).dir { let p = self.model.path_of(id, self.path()); self.go(port, p); } else { self.preview = Some(row); } } }
     /// The Open command: the entry under the cursor, when it is chosen - a folder is gone into, a file is opened in its default application (row 473, point 2).

@@ -25,7 +25,7 @@ static SCHEMA: Schema = Schema { keys: &[
     // ("" | "leader" | "noleader"), and - a development build's belt - the one folder whose rows take part
     Key::bool("sync/on", false), Key::str("sync/farm", ""), Key::str("sync/node", ""), Key::str("sync/leader", ""), Key::str("sync/only", ""),
     // what a pane shows from the start (row 516): hidden files, folders before files, sequences as one entry, a grid
-    Key::bool("view/hidden", false), Key::bool("view/folders_first", true), Key::bool("view/sequences", true), Key::bool("view/grid", false), Key::bool("view/second_pane", true), Key::bool("view/double_click_preview", true),
+    Key::bool("view/hidden", false), Key::bool("view/folders_first", true), Key::bool("view/sequences", true), Key::bool("view/grid", false), Key::bool("view/second_pane", true), Key::bool("view/double_click_preview", true), Key::bool("view/open_render_folders", true),
     // (the installed application's: wired with packaging)
     Key::bool("general/start_at_sign_in", false),
     // the window as it was left (row 523): its size in points (`1280x800`), whether it filled the screen, and the

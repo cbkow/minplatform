@@ -9,6 +9,9 @@ job_name = "{number}_{name}"
 #       "folder" - Add makes a plain folder
 #       "none"   - nothing is added by the application
 # folders: made inside the section when the job is made.
+# open_renders: an item's renders are listed with their folders opened in place - each folder that comes to a few rows,
+#          its image sequences counted as one row each; a folder of more stays closed (row 601). A UFB before 2.0.8
+#          does not know this key and takes the built-in type in place of a file that has it.
 # columns: the metadata columns the section starts with in a NEW job (none here, as in 1.4.2), each
 #          { name = "Status", type = "dropdown", options = ["Todo", { name = "Done", color = "#5fbf3f" }] }
 #          type: text (when none is written), dropdown, date, priority, number, checkbox, links, notes;
@@ -26,6 +29,7 @@ folder = "3d"
 kind = "shot"
 skeleton = "3d"
 folders = ["assets"]
+open_renders = true
 
 [[section]]
 folder = "assets"

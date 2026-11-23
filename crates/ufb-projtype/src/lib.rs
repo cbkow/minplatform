@@ -29,6 +29,8 @@ pub struct Section {
     #[serde(default = "default_rename")] pub rename: Vec<String>,
     /// Folders made inside the section when the job is made.
     #[serde(default)] pub folders: Vec<String>,
+    /// The renders of an item of this section are shown with their folders opened in place where that stays tidy (row 601).
+    #[serde(default)] pub open_renders: bool,
     /// The columns the section starts with: made in a job's section when the job is made (never later, and never in
     /// a job that was made before the type named them).
     #[serde(default)] pub columns: Vec<Column>,

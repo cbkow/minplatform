@@ -283,8 +283,10 @@ impl Ui {
         let a = it.project.clone(); let b = match it.proxies.clone().filter(|_| j.proxies) { Some(p) => p, None => it.renders.clone() };
         // each pane is given to the folder it STARTS in (rows 486, 487) - the item's project folder, its renders; the item
         // itself where it has none: Up stops there, and its history begins anew - Back cannot leave it
-        if first { self.panes[0].rooted(&port, a.clone(), a); }
-        if second && self.two && self.panes.len() > 1 { self.panes[1].rooted(&port, b.clone(), b); }
+        // the renders of a section whose type says so (the 3D one) open their tidy folders in place (row 601)
+        let tidy = crate::prefs::opens_render_folders() && j.section.as_deref().is_some_and(|s| crate::jobview::type_for(&j.path).ty.section(s).is_some_and(|t| t.open_renders));
+        if first { self.panes[0].rooted(&port, a.clone(), a, false); }
+        if second && self.two && self.panes.len() > 1 { self.panes[1].rooted(&port, b.clone(), b, tidy); }
     }
     /// In a job nothing is chosen: the panes show nothing (row 486 - not the section's folder, which only repeats the item list).
     fn blank(&self) -> bool { self.tracker.is_some() || self.job.as_ref().is_some_and(|j| j.chosen_item().is_none()) }
@@ -303,9 +305,10 @@ impl Ui {
         match kept {
             // (what it showed when it was left: the item, and where each pane was inside it)
             Some((Some(item), p0, p1)) => { j.choose = Some(item); j.hold = true; let on = p1.is_some();
+                let tidy = crate::prefs::opens_render_folders() && crate::jobview::type_for(&j.path).ty.section(name).is_some_and(|t| t.open_renders);
                 if on != self.two { self.set_two(on); }
-                self.panes[0].rooted(&port, p0.0, p0.1);
-                if let Some(p1) = p1 { if self.panes.len() > 1 { self.panes[1].rooted(&port, p1.0, p1.1); } } }
+                self.panes[0].rooted(&port, p0.0, p0.1, false);
+                if let Some(p1) = p1 { if self.panes.len() > 1 { self.panes[1].rooted(&port, p1.0, p1.1, tidy); } } }
             // (a first visit, or one left with nothing chosen: nothing is shown until an item is chosen)
             _ => { let _ = dir; }
         }
