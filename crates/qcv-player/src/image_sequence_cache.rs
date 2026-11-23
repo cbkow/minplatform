@@ -169,6 +169,8 @@ impl ImageSequenceCache {
     pub fn generation(&self) -> u64 { self.sh.generation.load(Acquire) }
     pub fn bytes(&self) -> usize { self.sh.lru.current_bytes() }
 
+    /// Frames are asked for or being read: the window is still filling (a shell polls its coverage until this ends).
+    pub fn filling(&self) -> bool { let io = self.sh.io.lock().unwrap(); !io.requests.is_empty() || !io.in_flight.is_empty() }
     pub fn stride(&self) -> i32 { self.sh.stride.load(Relaxed) }
     /// 1–4: cache every Nth frame (on the absolute grid); read-behind is off above 1.
     pub fn set_stride(&self, s: i32) { let s = s.clamp(1, 4); if self.sh.stride.swap(s, AcqRel) != s { self.sh.cache_cv.notify_one() } }

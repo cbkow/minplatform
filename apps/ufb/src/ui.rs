@@ -171,7 +171,8 @@ pub struct Ui {
     /// what the lightbox's layer showed when it was last rendered (it is rendered again only when this changes)
     lb_key: Option<u64>,
     lb_play: ActionButton, lb_loop: ActionButton, lb_mute: ActionButton, lb_qcv: ActionButton, /// the rate a sequence plays at: a press steps it on (the secondary button: back)
-    lb_fps: ActionButton, /// an EXR sequence's layers: the chip names the one shown, a press lists them (row 551)
+    lb_fps: ActionButton, /// a sequence's cache stride: a press steps it on, 1x - 4x (the secondary button: back)
+    lb_stride: ActionButton, /// an EXR sequence's layers: the chip names the one shown, a press lists them (row 551)
     lb_layer: ActionButton, lb_line: Rect, lb_click: Option<(f64, f64)>, hw: Option<Option<qcv_player::HwDevice>>, preview_btn: ActionButton,
     pub dnd: crate::dnd::Handle,
     /// after a drag of ours ended: the moments at which the panes ask again whether their folders changed (the
@@ -223,7 +224,7 @@ impl Ui {
             focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 3], over_gap: None, stacked: false, panes_area: Rect::ZERO, job_w: { let w = crate::settings::with(|s| s.float("window/job_list")); if w > 0.0 { w.clamp(JOB_LIST_MIN, 1200.0) } else { JOB_LIST } }, cursor: winit31::cursor::CursorIcon::Default,
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(), alt: false,
             titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, ctx: min_ui::Menu::new(), ctx_rows: vec![], ctx_paths: vec![], ctx_at: (0.0, 0.0), lightbox, lb_close: ActionButton::new("x", "Close  (Space)"), lb_press: None, lb_tiles: vec![], lb_hover: None, seq_btn: icon_button("stack", "Group sequences".to_string()),
-            lb_play: ActionButton::new("play", "Play / pause  (K)"), lb_loop: ActionButton::new("repeat", "Loop  (V)"), lb_mute: ActionButton::new("speaker-high", "Mute  (M)"), lb_qcv: { let mut b = ActionButton::new("", "Open in QCView").size_s(); b.label = Some("Open in QCView".into()); b }, lb_fps: { let mut b = ActionButton::new("", "Frames a second: press to change (remembered for this sequence)").size_s(); b.label = Some("24 fps".into()); b }, lb_layer: { let mut b = ActionButton::new("stack", "Layer shown: press to choose another").size_s(); b.label = Some("Layers".into()); b }, lb_line: Rect::ZERO, lb_click: None, hw: None, lb_last: None, lb_gaps: vec![], lb_cost: vec![], lb_key: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
+            lb_play: ActionButton::new("play", "Play / pause  (K)"), lb_loop: ActionButton::new("repeat", "Loop  (V)"), lb_mute: ActionButton::new("speaker-high", "Mute  (M)"), lb_qcv: { let mut b = ActionButton::new("", "Open in QCView").size_s(); b.label = Some("Open in QCView".into()); b }, lb_fps: { let mut b = ActionButton::new("", "Frames a second: press to change (remembered for this sequence)").size_s(); b.label = Some("24 fps".into()); b }, lb_stride: { let mut b = ActionButton::new("", "Cache stride: keep every frame (1x) or every 2nd to 4th, for heavy sequences. Press to change (remembered for this sequence)").size_s(); b.label = Some("1x".into()); b }, lb_layer: { let mut b = ActionButton::new("stack", "Layer shown: press to choose another").size_s(); b.label = Some("Layers".into()); b }, lb_line: Rect::ZERO, lb_click: None, hw: None, lb_last: None, lb_gaps: vec![], lb_cost: vec![], lb_key: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
             dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, task_card: Rect::ZERO, task_off: 0, task_btns: vec![], task_clear: min_ui::text_button::TextButton::new("Clear Finished", min_ui::text_button::Variant::Secondary).size_s(), tasks_rev: 0, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] };
         // (a window opens on a browser view: with its second pane when the settings say so, row 543)
         if crate::prefs::second_pane() { me.set_two(true); me.active = 0; }
@@ -1008,6 +1009,8 @@ impl Ui {
             // the sequence's rate: a press steps it to the next, the secondary button to the one before
             if self.lb_fps.rect.width() > 0.0 { let back = matches!(e, Event::Down { x, y, button: Button::Secondary } if self.lb_fps.hit(*x, *y)); let fwd = self.lb_fps.event(e, now) == Response::Clicked;
                 if fwd || back { if let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) { p.step_rate(if back { -1 } else { 1 }); } self.lb_key = None; return } }
+            if self.lb_stride.rect.width() > 0.0 { let back = matches!(e, Event::Down { x, y, button: Button::Secondary } if self.lb_stride.hit(*x, *y)); let fwd = self.lb_stride.event(e, now) == Response::Clicked;
+                if fwd || back { if let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) { p.step_stride(if back { -1 } else { 1 }); } self.lb_key = None; return } }
             // the sequence's layers: the list, the one shown ticked
             if self.lb_layer.rect.width() > 0.0 && self.lb_layer.event(e, now) == Response::Clicked { self.ask_seq_layer(); self.lb_key = None; return }
             let line = self.lb_line; let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) else { return };
@@ -1090,10 +1093,10 @@ impl Ui {
             (size.width, size.height, (s * 100.0) as u32, std::mem::discriminant(&v.state), ready, &v.name, &v.layer, v.layers.iter().filter(|l| l.1.is_some()).count(), self.lb_hover).hash(&mut k);
             if let Some(r) = v.place(area) { ((r.x0 * 4.0) as i64, (r.y0 * 4.0) as i64, (r.width() * 4.0) as i64).hash(&mut k); }
             if let Some(d) = v.doc.as_ref() { d.borrow().stamp.hash(&mut k); }
-            if let Some(p) = v.player.as_ref() { (p.t.current_frame(), p.t.is_playing(), p.t.audio.is_muted(), p.t.loop_enabled(), p.shown, p.rate()).hash(&mut k); }
+            if let Some(p) = v.player.as_ref() { (p.t.current_frame(), p.t.is_playing(), p.t.audio.is_muted(), p.t.loop_enabled(), p.shown, p.rate(), p.stride(), p.cached()).hash(&mut k); }
             // (a text that appears after a while; buttons that light up under the pointer)
             (v.state == crate::lightbox::State::Loading && now.duration_since(v.since) > Duration::from_millis(250)).hash(&mut k);
-            [&self.lb_close, &self.lb_play, &self.lb_loop, &self.lb_mute, &self.lb_qcv, &self.lb_fps, &self.lb_layer].iter().for_each(|b| (b.hovered(), b.animating(now)).hash(&mut k));
+            [&self.lb_close, &self.lb_play, &self.lb_loop, &self.lb_mute, &self.lb_qcv, &self.lb_fps, &self.lb_stride, &self.lb_layer].iter().for_each(|b| (b.hovered(), b.animating(now)).hash(&mut k));
             // (the layers of an EXR sequence come a moment after it opens, and the one shown is chosen: the chip is drawn anew)
             if let Some(p) = v.player.as_ref() { (p.layers.len(), &p.layer).hash(&mut k); }
             k.finish() };
@@ -1156,6 +1159,9 @@ impl Ui {
             // a sequence's rate is the owner's to say: the chip (row 478)
             self.lb_fps.rect = if p.sequence.is_some() { self.lb_fps.label = Some(format!("{} fps", crate::lightbox::rate_text(p.rate()))); let bw = self.lb_fps.measure(fonts, s).0; let hh = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let q = Rect::new(r - bw, bar.y0 + (bar.height() - hh) / 2.0, r, bar.y0 + (bar.height() + hh) / 2.0); r -= bw + 12.0 * s; q } else { Rect::ZERO };
             if self.lb_fps.rect.width() > 0.0 { self.lb_fps.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); self.lb_fps.paint(scene, fonts, s, now); }
+            // its cache stride beside it: every frame, or every 2nd - 4th for renders too heavy to keep whole (QCView's chips, as one)
+            self.lb_stride.rect = if p.sequence.is_some() { self.lb_stride.label = Some(format!("{}x", p.stride())); let bw = self.lb_stride.measure(fonts, s).0; let hh = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let q = Rect::new(r - bw, bar.y0 + (bar.height() - hh) / 2.0, r, bar.y0 + (bar.height() + hh) / 2.0); r -= bw + 12.0 * s; q } else { Rect::ZERO };
+            if self.lb_stride.rect.width() > 0.0 { self.lb_stride.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); self.lb_stride.paint(scene, fonts, s, now); }
             // an EXR sequence of several layers: the chip names the one shown
             self.lb_layer.rect = if p.layers.len() > 1 { self.lb_layer.label = Some(if p.layer.is_empty() { "Layers".to_string() } else { p.layer.clone() }); let bw = self.lb_layer.measure(fonts, s).0.min(260.0 * s); let hh = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let q = Rect::new(r - bw, bar.y0 + (bar.height() - hh) / 2.0, r, bar.y0 + (bar.height() + hh) / 2.0); r -= bw + 12.0 * s; q } else { Rect::ZERO };
             if self.lb_layer.rect.width() > 0.0 { self.lb_layer.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); self.lb_layer.paint(scene, fonts, s, now); }
@@ -1164,6 +1170,17 @@ impl Ui {
             // the line: what has played of it, and where it stands
             let line = Rect::new(x, bar.center().y - 2.0 * s, r.max(x + 20.0 * s), bar.center().y + 2.0 * s); self.lb_line = line;
             paint::rounded(scene, line, 2.0 * s, t::SWITCH_TRACK_COLOR_OFF); let px = line.x0 + line.width() * p.progress();
+            // a sequence's cache, under the line (QCView's band): what is kept behind the frame shown, dimmer, and ahead of it;
+            // with the loop on it goes round the end. Frames that are missing or could not be read are red, a pixel at least.
+            if let Some((behind, ahead, wraps, failed)) = p.cached() {
+                let n = p.t.frame_count().max(1); let cur = p.t.current_frame().clamp(0, n - 1); let (y0, y1) = (line.y1 + 2.0 * s, line.y1 + 2.0 * s + t::SCRUBBER_CACHE_BAND_THICKNESS as f64 * s);
+                let xf = |f: i32| line.x0 + line.width() * (f as f64 / n as f64);
+                let mut span = |a: i32, b: i32, color| if b > a { paint::rect(scene, Rect::new(xf(a), y0, xf(b), y1), color); };
+                let (b0, a1) = (cur - behind.min(n), cur + ahead.min(n) + 1);
+                span(b0.max(0), cur, t::SCRUBBER_CACHE_BEHIND_COLOR); span(cur, a1.min(n), t::SCRUBBER_CACHE_AHEAD_COLOR);
+                if wraps { if b0 < 0 { span((n + b0).max(a1.min(n)), n, t::SCRUBBER_CACHE_BEHIND_COLOR); } if a1 > n { span(0, (a1 - n).min(b0.max(0)), t::SCRUBBER_CACHE_AHEAD_COLOR); } }
+                if failed > 0 { for f in p.failed() { let x0 = xf(f); paint::rect(scene, Rect::new(x0, y0, xf(f + 1).max(x0 + s), y1), t::SCRUBBER_FAILED_FRAME_COLOR); } }
+            }
             paint::rounded(scene, Rect::new(line.x0, line.y0, px, line.y1), 2.0 * s, t::NEUTRAL_CONTENT_COLOR_DEFAULT); paint::rounded(scene, Rect::new(px - 5.0 * s, line.center().y - 5.0 * s, px + 5.0 * s, line.center().y + 5.0 * s), 5.0 * s, t::NEUTRAL_CONTENT_COLOR_DEFAULT);
         }
         // the strip: the name, then what the picture is
@@ -2049,6 +2066,7 @@ impl Ui {
             // a script run INSIDE the page of the web view (a link pressed, a key made there: nothing is sent to the desktop)
             "lbwebjs" => if let Some(w) = self.lightbox.view.as_ref().and_then(|v| v.web.as_ref()) { w.eval(arg); },
             "lbfps" => if let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) { p.step_rate(arg.parse().unwrap_or(1)); eprintln!("UFB_DEMO: the sequence plays at {} fps", crate::lightbox::rate_text(p.rate())); self.lb_key = None; },
+            "lbstride" => if let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) { p.step_stride(arg.parse().unwrap_or(1)); eprintln!("UFB_DEMO: the cache keeps every {} frame(s); cached {:?}", p.stride(), p.cached()); self.lb_key = None; },
             "lbkey" => { let k = KeyEvent { key: Key::Char(arg.to_lowercase()), text: None, shift: false, cmd: false }; self.lightbox_key(&k, arg); }
             "lbseek" => if let (Ok(at), Some(p)) = (arg.parse::<f64>(), self.lightbox.view.as_mut().and_then(|v| v.player.as_mut())) { p.scrub(at); p.scrub_end(); },
             "lbseqlayer" => if let Some(i) = num(arg) { self.lightbox.set_seq_layer(i); }, "lbseqmenu" => self.ask_seq_layer(),

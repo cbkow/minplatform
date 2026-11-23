@@ -13,6 +13,9 @@ static SCHEMA: Schema = Schema { keys: &[
     Key::str("player/sequence_rate", "24/1"),
     // the rate chosen for each sequence: lines of `num/den <tab> the sequence's pattern`, the newest first
     Key::str("player/sequence_rates", ""),
+    // the cache stride of a sequence (every Nth frame is kept, 1 - 4), as the rate: the one chosen last, and each sequence's own
+    // as lines of `stride <tab> the sequence's pattern`, the newest first
+    Key::int("player/sequence_stride", 1, 1, 4), Key::str("player/sequence_strides", ""),
     // the columns of a list, a kind of panel (row 488): the browser's panes, a job's first pane, a job's second - `shown|widths`
     // the item list of a job shows the date its items were changed
     Key::bool("columns/items_modified", true),
@@ -69,6 +72,17 @@ pub fn set_sequence_rate(pattern: &str, rate: (u32, u32)) {
     with(|s| { let all = s.string("player/sequence_rates"); let me = format!("{}/{}\t{pattern}", rate.0, rate.1);
         let rest: Vec<&str> = all.lines().filter(|l| l.split_once('\t').is_some_and(|(_, p)| p != pattern)).take(KEPT - 1).collect();
         s.set_str("player/sequence_rates", &std::iter::once(me.as_str()).chain(rest).collect::<Vec<_>>().join("\n")); s.set_str("player/sequence_rate", &format!("{}/{}", rate.0, rate.1)); });
+}
+/// The cache stride a sequence is opened with: the one chosen for it before, else the one chosen last for any, else 1.
+pub fn sequence_stride(pattern: &str) -> i32 {
+    with(|s| { let all = s.string("player/sequence_strides");
+        all.lines().find_map(|l| l.split_once('\t').filter(|(_, p)| *p == pattern).and_then(|(n, _)| n.trim().parse::<i32>().ok())).unwrap_or(s.int("player/sequence_stride") as i32).clamp(1, 4) })
+}
+/// A cache stride was chosen for a sequence: remembered for it, and as the one chosen last.
+pub fn set_sequence_stride(pattern: &str, stride: i32) {
+    with(|s| { let all = s.string("player/sequence_strides"); let me = format!("{stride}\t{pattern}");
+        let rest: Vec<&str> = all.lines().filter(|l| l.split_once('\t').is_some_and(|(_, p)| p != pattern)).take(KEPT - 1).collect();
+        s.set_str("player/sequence_strides", &std::iter::once(me.as_str()).chain(rest).collect::<Vec<_>>().join("\n")); s.set_int("player/sequence_stride", stride as i64); });
 }
 
 #[cfg(test)]

@@ -41,7 +41,8 @@ pub struct Player { pub t: qcv_player::Transport, pub shown: bool, /// frames ar
     pub scrubbing: bool, /// an image sequence: the pattern it was opened by (its rate is chosen by hand and remembered for it, row 478)
     pub sequence: Option<String>, /// an EXR sequence: its first frame's file (asked which layers it has), the layers when it has
     /// several, and the one chosen ("" = the file's own first choice) - row 551
-    pub first: Option<String>, pub layers: Vec<String>, pub layer: String }
+    pub first: Option<String>, pub layers: Vec<String>, pub layer: String, /// a sequence's cache was reading a moment ago: its bar is drawn until then
+    filled: std::cell::Cell<Instant> }
 /// A frame's file by a pattern as the player reads one: `%04d`, `%d`, `%%`.
 pub fn frame_file(pattern: &str, n: i64) -> String {
     let (mut out, mut it) = (String::new(), pattern.chars().peekable());
@@ -73,12 +74,14 @@ impl Player {
         match qcv_player::AudioPlayer::new() { Ok(a) => t.set_audio(Box::new(a)), Err(e) => eprintln!("UFB: no sound ({e})") }
         // loop, mute and volume are the application's, remembered between launches
         let set = crate::settings::with(|s| (s.bool("player/loop"), s.bool("player/muted"), s.float("player/volume") as f32)); t.set_loop_enabled(set.0); t.audio.set_muted(set.1); t.audio.set_volume(set.2);
+        // a sequence's cache stride, as its rate: the one chosen for it, else the one chosen last (QCView's `startImageSequence`)
+        if let (Media::Sequence { pattern, .. }, Some(seq)) = (media, t.decoder().as_sequence()) { seq.cache().set_stride(crate::settings::sequence_stride(pattern)); }
         let audio_only = t.is_audio_only();
         // it plays as soon as it is opened (owner 2026-11-16: "should videos autoplay and auto loop too?"; the loop is on
         // unless it was turned off). A scripted look starts it itself - after muting it.
         if std::env::var_os("UFB_DEMO").is_none() || std::env::var_os("UFB_AUTOPLAY").is_some() { t.apply(qcv_player::Action::TogglePlayback, Instant::now()); }
         Ok(Player { t, shown: false, awake: Instant::now() + Duration::from_millis(800), audio_only, scrubbing: false, sequence: match media { Media::Sequence { pattern, .. } => Some(pattern.clone()), _ => None },
-            first: match media { Media::Sequence { pattern, start, .. } if pattern.to_lowercase().ends_with(".exr") => Some(frame_file(pattern, *start)), _ => None }, layers: vec![], layer: String::new() })
+            first: match media { Media::Sequence { pattern, start, .. } if pattern.to_lowercase().ends_with(".exr") => Some(frame_file(pattern, *start)), _ => None }, layers: vec![], layer: String::new(), filled: std::cell::Cell::new(Instant::now()) })
     }
     fn keep_settings(&self) { let (l, m, v) = (self.t.loop_enabled(), self.t.audio.is_muted(), self.t.audio.volume() as f64); crate::settings::with(|s| { s.set_bool("player/loop", l); s.set_bool("player/muted", m); s.set_float("player/volume", v); }); }
     /// The rate a sequence plays at now.
@@ -90,13 +93,30 @@ impl Player {
         let next = RATES[(at + step).rem_euclid(RATES.len() as i32) as usize];
         if self.t.set_sequence_rate(qcv_timeline::Rate::new(next.0, next.1)) { crate::settings::set_sequence_rate(&pattern, next); self.awake = Instant::now() + Duration::from_millis(800); }
     }
+    /// A sequence's cache stride (1: every frame is kept; 2 - 4: every 2nd - 4th, the others show their neighbour).
+    pub fn stride(&self) -> i32 { self.t.decoder().as_sequence().map_or(1, |s| s.cache().stride()) }
+    /// The stride steps on, 1 - 4 and round (`step` -1: back); remembered for this sequence.
+    pub fn step_stride(&mut self, step: i32) {
+        let (Some(pattern), Some(seq)) = (self.sequence.clone(), self.t.decoder().as_sequence()) else { return };
+        let next = (seq.cache().stride() - 1 + step).rem_euclid(4) + 1; seq.cache().set_stride(next);
+        crate::settings::set_sequence_stride(&pattern, next); self.awake = Instant::now() + Duration::from_millis(800);
+    }
+    /// A sequence's cache around the frame shown: the frames it covers behind and ahead, whether it goes round the end, and
+    /// how many frames could not be read.
+    pub fn cached(&self) -> Option<(i32, i32, bool, usize)> { self.t.decoder().as_sequence().map(|s| { let c = s.cache(); (c.buffered_behind_coverage(), c.buffered_ahead_coverage(), c.looping(), c.failed_count()) }) }
+    /// The frames of a sequence that are missing or could not be read, in order.
+    pub fn failed(&self) -> Vec<i32> { self.t.decoder().as_sequence().map(|s| s.cache().failed_frames()).unwrap_or_default() }
     /// One of the transport's actions (a key, a button).
     pub fn act(&mut self, a: qcv_player::Action) { let now = Instant::now(); self.t.apply(a, now); self.awake = now + Duration::from_millis(800); self.keep_settings(); }
     /// The line is taken hold of at `at` (0 - 1 of its length), dragged, let go.
     pub fn scrub(&mut self, at: f64) { if !self.scrubbing { self.t.begin_scrub(); self.scrubbing = true; } let n = self.t.frame_count().max(1); self.t.scrub_to_frame((at.clamp(0.0, 1.0) * (n - 1) as f64).round() as i32); self.awake = Instant::now() + Duration::from_millis(800); }
     pub fn scrub_end(&mut self) { if std::mem::take(&mut self.scrubbing) { self.t.end_scrub(); self.awake = Instant::now() + Duration::from_millis(800); } }
     /// Frames must go on being drawn: it plays, shuttles, is being dragged, or has not shown its first frame yet.
-    pub fn busy(&self, now: Instant) -> bool { self.t.is_playing() || self.t.is_fast_seeking() || self.scrubbing || (!self.shown && !self.audio_only) || now < self.awake }
+    pub fn busy(&self, now: Instant) -> bool {
+        // (a sequence's cache fills while nothing plays: its bar follows it, and a little longer for the last count)
+        if self.t.decoder().as_sequence().is_some_and(|s| s.cache().filling()) { self.filled.set(now + Duration::from_millis(500)); }
+        now < self.filled.get() || self.busy_playing(now) }
+    fn busy_playing(&self, now: Instant) -> bool { self.t.is_playing() || self.t.is_fast_seeking() || self.scrubbing || (!self.shown && !self.audio_only) || now < self.awake }
     /// `HH:MM:SS:FF` of the frame shown (never drop-frame, counted from the first frame), and of the whole.
     pub fn clock(&self) -> (String, String) {
         let fps = self.t.rate().as_f64(); let tc = |f: i64| { let r = (fps.round() as i64).max(1); let s = f.max(0) / r; format!("{:02}:{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60, f.max(0) % r) };
