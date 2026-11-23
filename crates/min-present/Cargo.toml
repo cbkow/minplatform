@@ -27,4 +27,4 @@ objc2-core-video = { workspace = true }
 objc2-app-kit = { workspace = true, features = ["NSView", "NSResponder", "NSScreen"] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = ["Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common", "Win32_Foundation"] }
+windows = { workspace = true, features = ["Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common", "Win32_Foundation", "Win32_Devices_Display", "Win32_Graphics_Gdi"] }

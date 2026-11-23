@@ -13,6 +13,7 @@ pub mod frame;
 pub mod engine;
 pub mod dual;
 pub mod presenter;
+pub mod screen;
 pub mod readback;
 pub mod capture;
 pub mod wire;

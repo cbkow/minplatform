@@ -6531,7 +6531,7 @@ dependencies = [
 
 [[package]]
 name = "ufb"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
  "ab_glyph",
  "arboard",

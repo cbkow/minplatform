@@ -57,7 +57,6 @@ mod color;
 mod color_model;
 mod color_drawer;
 mod color_columns;
-mod sdr_white;
 mod dual_controls;
 mod dual_bars;
 mod guides;
@@ -939,11 +938,9 @@ impl App {
             g.sdr_checked = Some(now);
             if cfg!(windows) {
                 let name = g.window.current_monitor().and_then(|m| m.name().map(|n| n.to_string())).unwrap_or_default();
-                let (gain, hdr) = sdr_white::screen_for(&name);
-                if let Some(hdr) = hdr && g.presenter.set_sdr_surface(!hdr) { g.ui_dirty = true; }
-                if hdr != self.screen_hdr { self.screen_hdr = hdr; g.ui_dirty = true; }
-                let gain = if g.presenter.sdr_surface() { 1.0 } else { gain };
-                if (gain - g.presenter.engine.output_gain()).abs() > 1e-3 { log::info!("SDR white on {name}: {:.0} nits (gain {gain:.2})", gain * 80.0); g.presenter.engine.set_output_gain(gain); }
+                // (the family's shared check, row 602: `min_present::Presenter::follow_screen`)
+                let (hdr, changed) = g.presenter.follow_screen(&name);
+                if changed || hdr != self.screen_hdr { self.screen_hdr = hdr; g.ui_dirty = true; }
             } else if let Some(h) = g.presenter.window_screen_headroom() {
                 // macOS: read only — EDR stays as it is (row 220's ruling); the screen's headroom feeds the drawer's pill (row 222)
                 let hdr = Some(h > 1.0 + 1e-3); if hdr != self.screen_hdr { self.screen_hdr = hdr; g.ui_dirty = true; }

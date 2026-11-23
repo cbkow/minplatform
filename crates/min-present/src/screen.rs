@@ -1,8 +1,10 @@
-//! The SDR white level of the monitor the window is on (canon row 184, found on rhombus's HDR monitor 2026-11-08: "it's for
+//! The SDR white level of the monitor a window is on, for every application of the family (canon row 602; QCView's
+//! from row 184, found on rhombus's HDR monitor 2026-11-08: "it's for
 //! sure dimmer"). On Windows the scRGB surface's 1.0 is 80 nits, while the desktop shows SDR content at the user's "SDR content
 //! brightness"; our 1.0 is SDR white (as on macOS EDR), so the screen pass scales by that level ÷ 80. Read through
 //! DisplayConfig: the source whose GDI name is the window's monitor → its target's DISPLAYCONFIG_SDR_WHITE_LEVEL
-//! (SDRWhiteLevel / 1000 × 80 nits). macOS: EDR already puts SDR white at 1.0 — gain 1.
+//! (SDRWhiteLevel / 1000 × 80 nits). macOS: EDR already puts SDR white at 1.0 — gain 1. A window follows its screen
+//! through [`crate::Presenter::follow_screen`].
 
 /// (the SDR-white gain, whether the monitor shows HDR) — HDR = Windows' advanced colour ENABLED and not just "wide colour
 /// enforced" (Auto Color Management on an SDR panel), canon row 220; None when it cannot be read (the fp16 surface stays).

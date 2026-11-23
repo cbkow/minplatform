@@ -132,6 +132,20 @@ impl Presenter {
         true
     }
     pub fn sdr_surface(&self) -> bool { self.sdr10.is_some() }
+    /// Windows, the linear surface: the window follows the screen it is on (canon rows 184, 220, 602) - a screen that shows
+    /// HDR keeps the fp16 scRGB surface, with SDR white lifted from scRGB's 80 nits to the user's "SDR content
+    /// brightness"; one that does not gets the 10-bit sRGB surface (gain 1). `gdi_name`: the window's monitor as the
+    /// system names it (winit's `MonitorHandle::name`). Call it every couple of seconds, before a frame is drawn.
+    /// (Whether the screen shows HDR - none when that cannot be read or elsewhere than on Windows -, something changed
+    /// and the window is to be drawn again.)
+    pub fn follow_screen(&mut self, gdi_name: &str) -> (Option<bool>, bool) {
+        if !cfg!(windows) || self.info.output != Output::Edr { return (None, false) }
+        let (gain, hdr) = crate::screen::screen_for(gdi_name);
+        let mut changed = hdr.is_some_and(|hdr| self.set_sdr_surface(!hdr));
+        let gain = if self.sdr_surface() { 1.0 } else { gain };
+        if (gain - self.engine.output_gain()).abs() > 1e-3 { log::info!("SDR white on {gdi_name}: {:.0} nits (gain {gain:.2})", gain * 80.0); self.engine.set_output_gain(gain); changed = true; }
+        (hdr, changed)
+    }
     pub fn size(&self) -> (u32, u32) { (self.config.width, self.config.height) }
     pub fn resize(&mut self, w: u32, h: u32) {
         self.config.width = w.max(1); self.config.height = h.max(1);

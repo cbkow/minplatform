@@ -172,7 +172,8 @@ pub struct Ui {
     lb_key: Option<u64>,
     lb_play: ActionButton, lb_loop: ActionButton, lb_mute: ActionButton, lb_qcv: ActionButton, /// the rate a sequence plays at: a press steps it on (the secondary button: back)
     lb_fps: ActionButton, /// a sequence's cache stride: a press steps it on, 1x - 4x (the secondary button: back)
-    lb_stride: ActionButton, /// an EXR sequence's layers: the chip names the one shown, a press lists them (row 551)
+    lb_stride: ActionButton, /// when the window's screen was last looked at (Windows: its SDR white, whether it shows HDR)
+    screen_checked: Option<Instant>, /// an EXR sequence's layers: the chip names the one shown, a press lists them (row 551)
     lb_layer: ActionButton, lb_line: Rect, lb_click: Option<(f64, f64)>, hw: Option<Option<qcv_player::HwDevice>>, preview_btn: ActionButton,
     pub dnd: crate::dnd::Handle,
     /// after a drag of ours ended: the moments at which the panes ask again whether their folders changed (the
@@ -224,7 +225,7 @@ impl Ui {
             focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 3], over_gap: None, stacked: false, panes_area: Rect::ZERO, job_w: { let w = crate::settings::with(|s| s.float("window/job_list")); if w > 0.0 { w.clamp(JOB_LIST_MIN, 1200.0) } else { JOB_LIST } }, cursor: winit31::cursor::CursorIcon::Default,
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(), alt: false,
             titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, ctx: min_ui::Menu::new(), ctx_rows: vec![], ctx_paths: vec![], ctx_at: (0.0, 0.0), lightbox, lb_close: ActionButton::new("x", "Close  (Space)"), lb_press: None, lb_tiles: vec![], lb_hover: None, seq_btn: icon_button("stack", "Group sequences".to_string()),
-            lb_play: ActionButton::new("play", "Play / pause  (K)"), lb_loop: ActionButton::new("repeat", "Loop  (V)"), lb_mute: ActionButton::new("speaker-high", "Mute  (M)"), lb_qcv: { let mut b = ActionButton::new("", "Open in QCView").size_s(); b.label = Some("Open in QCView".into()); b }, lb_fps: { let mut b = ActionButton::new("", "Frames a second: press to change (remembered for this sequence)").size_s(); b.label = Some("24 fps".into()); b }, lb_stride: { let mut b = ActionButton::new("", "Cache stride: keep every frame (1x) or every 2nd to 4th, for heavy sequences. Press to change (remembered for this sequence)").size_s(); b.label = Some("1x".into()); b }, lb_layer: { let mut b = ActionButton::new("stack", "Layer shown: press to choose another").size_s(); b.label = Some("Layers".into()); b }, lb_line: Rect::ZERO, lb_click: None, hw: None, lb_last: None, lb_gaps: vec![], lb_cost: vec![], lb_key: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
+            lb_play: ActionButton::new("play", "Play / pause  (K)"), lb_loop: ActionButton::new("repeat", "Loop  (V)"), lb_mute: ActionButton::new("speaker-high", "Mute  (M)"), lb_qcv: { let mut b = ActionButton::new("", "Open in QCView").size_s(); b.label = Some("Open in QCView".into()); b }, lb_fps: { let mut b = ActionButton::new("", "Frames a second: press to change (remembered for this sequence)").size_s(); b.label = Some("24 fps".into()); b }, lb_stride: { let mut b = ActionButton::new("", "Cache stride: keep every frame (1x) or every 2nd to 4th, for heavy sequences. Press to change (remembered for this sequence)").size_s(); b.label = Some("1x".into()); b }, screen_checked: None, lb_layer: { let mut b = ActionButton::new("stack", "Layer shown: press to choose another").size_s(); b.label = Some("Layers".into()); b }, lb_line: Rect::ZERO, lb_click: None, hw: None, lb_last: None, lb_gaps: vec![], lb_cost: vec![], lb_key: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
             dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, task_card: Rect::ZERO, task_off: 0, task_btns: vec![], task_clear: min_ui::text_button::TextButton::new("Clear Finished", min_ui::text_button::Variant::Secondary).size_s(), tasks_rev: 0, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] };
         // (a window opens on a browser view: with its second pane when the settings say so, row 543)
         if crate::prefs::second_pane() { me.set_two(true); me.active = 0; }
@@ -2181,6 +2182,13 @@ impl Ui {
         for p in self.panes.iter_mut() { p.keep_view(); }
         let s = self.scale(); let size = self.window.surface_size(); let (w, h) = (size.width as f64, size.height as f64); if w < 1.0 || h < 1.0 { return }
         self.poll(); self.run_demo();
+        // Windows: the window follows its screen (row 602) - on one that shows HDR, white is the system's SDR white and
+        // not scRGB's 80 nits (the owner, 2026-11-23: UFB "was dim yesterday on an HDR screen"); looked at every 2 s
+        if cfg!(windows) && self.screen_checked.is_none_or(|t| t.elapsed().as_secs_f32() >= 2.0) {
+            self.screen_checked = Some(Instant::now());
+            let name = self.window.current_monitor().and_then(|m| m.name().map(|n| n.to_string())).unwrap_or_default();
+            if self.presenter.follow_screen(&name).1 { self.lb_key = None; self.window.request_redraw(); }
+        }
         if self.lightbox.is_open() { return self.redraw_lightbox() }
         let now = Instant::now(); let (ink, sub) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
         if self.active >= self.shown() { self.active = 0; }
