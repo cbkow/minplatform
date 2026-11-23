@@ -1,5 +1,5 @@
-lock 12d56fe49b0197f6f81cce24b3db5e4fc7e0d702
-version 2.0.7
+lock 88b4e3cbd164e103ee70042d3e78b6f2aa60d65a
+version 2.0.8
 ffmpeg amf avisynth chromaprint cuda-llvm ffnvcodec fontconfig frei0r gmp gpl iconv lcms2 libaom libaribb24 libaribcaption libass libbluray libdav1d libdavs2 libdvdnav libdvdread libfreetype libfribidi libgme libharfbuzz libjxl libkvazaar liblcevc-dec libmp3lame liboapv libopencore-amrnb libopencore-amrwb libopenh264 libopenjpeg libopenmpt libopus libplacebo librav1e librist librsvg librubberband libsnappy libsoxr libsrt libssh libsvtav1 libtheora libtwolame libuavs3d libvidstab libvmaf libvorbis libvpl libvpx libvvenc libwebp libx264 libx265 libxavs2 libxml2 libxvid libzimg libzmq lv2 lzma openal opencl pthreads schannel sdl2 shared vaapi vapoursynth version3 vulkan zlib
 port bzip2 1.0.8#6
 port expat 2.9.0
