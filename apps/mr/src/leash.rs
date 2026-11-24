@@ -36,7 +36,11 @@ pub fn run(cmd: &[String]) -> ! {
         #[cfg(unix)] kill_group(id);
         #[cfg(windows)] os::kill(job);
         std::process::exit(KILLED) });
-    let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(1);
+    let status = child.wait().ok();
+    // a renderer ended by a signal has no code: the signal goes to the chunk's log (it was lost, and the chunk read
+    // as "ended with 1" - seen 2026-11-24 on a crash while Cycles loaded its Metal kernels)
+    #[cfg(unix)] { use std::os::unix::process::ExitStatusExt; if let Some(sig) = status.as_ref().and_then(|s| s.signal()) { eprintln!("{} was ended by signal {sig}", cmd[0]); } }
+    let code = status.and_then(|s| s.code()).unwrap_or(1);
     // the renderer has ended by itself: what it started and left behind ends with it. (On Windows the job does this
     // as the leash exits; 0.5.x on macOS left such helpers running after every chunk - seen 2026-11-14.)
     #[cfg(unix)] kill_group(id);
