@@ -100,6 +100,16 @@ not known. Finding 1 therefore stands for the PREVIEW (walked by the owner all d
 thumbnails; **for the EXR thumbnail it was seen once and could not be had again.** Tried after that, no change: the EXR type declared as imported, with a document type, in the host's Info.plist (as
 Tristimulator's host has it). Not tried: after a restart of the Mac, another machine, a notarized bundle.
 
+## Later the same day: QuickTime movies and MPEG-4 are NOT handed over
+
+Asked by the owner for the `.mov` files QuickTime shows nothing for (DNxHR 444 in a QuickTime container). The walk
+build declared `com.apple.quicktime-movie`, `public.mpeg-4` and `com.apple.m4v-video` beside its own two, for the
+preview and for the thumbnail. A Quick Look window (`qlmanage -p`) on a DNxHR 444 MOV, a ProRes MOV and an H.264 MP4
+never started the extension, while an MXF straight after did; the thumbnails of the two playable files came from the
+system and the DNxHR 444 file got none, the extension not asked. In Finder the owner's space bar on the DNxHR 444 MOV
+showed the plain icon panel. So finding 1 has a limit: **the system keeps its movie types.** Quick Look chooses by
+type, never by codec, so a movie the system cannot decode cannot be taken alone either. The types were taken out again.
+
 ## Not seen
 
 - The pointer and the keys inside our view (the preview has a slider, a button and a key readout for this): a person's
