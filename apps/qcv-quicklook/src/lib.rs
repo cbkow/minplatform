@@ -53,13 +53,14 @@ impl Video {
         let now = Instant::now(); if muted && !Playback::is_muted(&t) { Playback::apply(&mut t, Action::ToggleMute, now); }
         let i = Playback::timecode_info(&t); let fmt = TimecodeFormatter::new(i.frame_rate.0, i.frame_rate.1, i.drop_frame);
         let start = i.source_timecode.as_deref().filter(|o| !o.is_empty()).map(|tc| fmt.parse(tc).max(0)).unwrap_or(0);
-        let mut scrub = Scrubber::new(); scrub.compact = true;
-        Ok(Video { t, rew: ActionButton::new("rewind", &tip("Rewind (hold; J)")).size_s().hold(), play: ActionButton::new("play", &tip("Play (K)")).size_s(), ff: ActionButton::new("fast-forward", &tip("Fast-forward (hold; L)")).size_s().hold(),
-            mute: ActionButton::new("speaker-high", &tip("Mute (M)")).size_s(), big: ActionButton::new("play", &tip("Play (K)")), scrub, tips: Tooltips::default(), fmt, start, tc: String::new(), tc_rect: Rect::ZERO, auto: true, press: false })
+        let mut scrub = Scrubber::new(); scrub.compact = true; scrub.bare = true;
+        Ok(Video { t, rew: ActionButton::new("rewind", &tip("Rewind (hold; J)")).size_s().hold().glass(), play: ActionButton::new("play", &tip("Play (K)")).size_s().glass(), ff: ActionButton::new("fast-forward", &tip("Fast-forward (hold; L)")).size_s().hold().glass(),
+            mute: ActionButton::new("speaker-high", &tip("Mute (M)")).size_s().glass(), big: ActionButton::new("play", &tip("Play (K)")).glass(), scrub, tips: Tooltips::default(), fmt, start, tc: String::new(), tc_rect: Rect::ZERO, auto: true, press: false })
     }
     fn state(&self) -> ScrubState { let p: &dyn Playback = &self.t; ScrubState { frames: p.frame_count(), fps: p.rate().as_f64(), current: p.current_frame(), in_point: p.in_point(), out_point: p.out_point(), playing: p.is_playing(), scrubbing: p.is_scrubbing(), cached: None } }
-    fn sync(&mut self, now: Instant) {
+    fn sync(&mut self, now: Instant, scale: f64) {
         let (playing, has, muted, cur) = { let p: &dyn Playback = &self.t; (p.is_playing(), p.has_audio(), p.is_muted(), p.current_frame()) };
+        for b in [&mut self.rew, &mut self.play, &mut self.ff, &mut self.mute, &mut self.big] { b.corners = min_ui::action_button::Corners::all(6.0 * scale); }
         for b in [&mut self.play, &mut self.big] { b.icon = if playing { "pause" } else { "play" }; b.tooltip = tip(if playing { "Pause (K)" } else { "Play (K)" }); }
         if self.mute.enabled != has { self.mute.enabled = has; if !has { self.mute.reset(now); } }
         self.mute.icon = if muted { "speaker-x" } else { "speaker-high" }; self.mute.tooltip = tip(if muted { "Unmute (M)" } else { "Mute (M)" });
@@ -165,7 +166,7 @@ impl Preview {
             let chip = |p: &mut Picker, fonts: &mut Fonts, x0: f64, max: f64| -> f64 { let (pw, ph) = p.measure(fonts, k); let pw = pw.clamp(96.0 * k, max); p.rect = Rect::new(x0, cy - ph / 2.0, x0 + pw, cy + ph / 2.0); pw };
             if let Some(v) = self.video.as_mut() {
                 // rewind, play, fast-forward | the playbar | timecode, mute, colour, the facts (row 615)
-                v.sync(now); let st = v.state();
+                v.sync(now, k); let st = v.state();
                 let (bw, bh) = v.play.measure(&mut self.fonts, k); let tight = t::SPACING_50 as f64 * k; let gap = 10.0 * k;
                 for bt in [&mut v.rew, &mut v.play, &mut v.ff] { bt.rect = Rect::new(x, cy - bh / 2.0, x + bw, cy + bh / 2.0); bt.paint(&mut b, &mut self.fonts, k, now); x += bw + tight; }
                 x += gap - tight;
@@ -194,7 +195,7 @@ impl Preview {
                 for bt in [&mut v.rew, &mut v.play, &mut v.ff, &mut v.mute] { bt.rect = Rect::ZERO; } v.scrub.layout(Rect::ZERO, k); v.big.rect = Rect::ZERO;
                 // a small Finder preview: the picture, and on hover ONE button in its middle (row 615, point 1)
                 if a > 0.01 && !room {
-                    v.sync(now); let (bw, bh) = v.big.measure(&mut self.fonts, k); let c = kurbo::Point::new(w / 2.0, h / 2.0);
+                    v.sync(now, k); let (bw, bh) = v.big.measure(&mut self.fonts, k); let c = kurbo::Point::new(w / 2.0, h / 2.0);
                     v.big.rect = Rect::new(c.x - bw / 2.0, c.y - bh / 2.0, c.x + bw / 2.0, c.y + bh / 2.0);
                     let mut b = vello::Scene::new(); paint::rounded(&mut b, v.big.rect.inflate(6.0 * k, 6.0 * k), 10.0 * k, t::BACKGROUND_LAYER_1_COLOR.with_alpha(0.9)); v.big.paint(&mut b, &mut self.fonts, k, now);
                     scene.push_layer(peniko::Fill::NonZero, peniko::Mix::Normal, a, Affine::IDENTITY, &Rect::new(0.0, 0.0, w, h)); scene.append(&b, None); scene.pop_layer();

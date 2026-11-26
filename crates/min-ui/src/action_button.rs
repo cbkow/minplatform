@@ -35,6 +35,10 @@ pub struct ActionButton {
     pub corners: Corners,
     /// a smaller glyph in the same button (logical px; None = the toolbar size) — the Output header's speaker
     pub icon_size: Option<f32>,
+    /// On glass: the button sits on a translucent surface over a picture (the Quick Look preview's bar, canon row 615).
+    /// No fill at rest, a faint white while hovered, a little more while pressed - the tokens' solid greys would
+    /// punch an opaque square into the glass.
+    pub glass: bool,
     hovered: bool,
     pressed: bool,
     hover: Ramp,
@@ -42,9 +46,10 @@ pub struct ActionButton {
 
 impl ActionButton {
     pub fn new(icon: &'static str, tooltip: &str) -> ActionButton {
-        ActionButton { icon, label: None, tooltip: tooltip.to_string(), enabled: true, selected: false, emphasized: false, hold: false, focused: false, size_s: false, rect: Rect::ZERO, corners: Corners::all(0.0), icon_size: None, hovered: false, pressed: false, hover: Ramp::new(0.0, t::ACTION_BUTTON_ANIMATION_DURATION) }
+        ActionButton { icon, label: None, tooltip: tooltip.to_string(), enabled: true, selected: false, emphasized: false, hold: false, focused: false, size_s: false, rect: Rect::ZERO, corners: Corners::all(0.0), icon_size: None, glass: false, hovered: false, pressed: false, hover: Ramp::new(0.0, t::ACTION_BUTTON_ANIMATION_DURATION) }
     }
     pub fn hold(mut self) -> ActionButton { self.hold = true; self }
+    pub fn glass(mut self) -> ActionButton { self.glass = true; self }
     /// The primary button is down on this node (a hold in progress, or a click not yet released).
     pub fn is_pressed(&self) -> bool { self.pressed }
     pub fn enabled(mut self, on: bool) -> ActionButton { self.enabled = on; self }
@@ -107,6 +112,8 @@ impl ActionButton {
             (Some(if self.pressed { t::ACCENT_BACKGROUND_COLOR_DOWN } else { mix(t::ACTION_BUTTON_BACKGROUND_COLOR_SELECTED_EMPHASIZED, t::ACTION_BUTTON_BACKGROUND_COLOR_SELECTED_EMPHASIZED_HOVER, hover) }), t::ACTION_BUTTON_CONTENT_COLOR_SELECTED_EMPHASIZED)
         } else if self.selected {
             (Some(if self.pressed { t::ACTION_BUTTON_BACKGROUND_COLOR_SELECTED_DOWN } else { mix(t::ACTION_BUTTON_BACKGROUND_COLOR_SELECTED, t::ACTION_BUTTON_BACKGROUND_COLOR_SELECTED_HOVER, hover) }), t::ACTION_BUTTON_CONTENT_COLOR_SELECTED)
+        } else if self.glass {
+            (Some(min_theme::Color::rgba(1.0, 1.0, 1.0, if self.pressed { 0.24 } else { 0.14 * hover })), if self.hovered { t::ACTION_BUTTON_CONTENT_COLOR_HOVER } else { t::ACTION_BUTTON_CONTENT_COLOR })
         } else {
             (Some(if self.pressed { t::ACTION_BUTTON_BACKGROUND_COLOR_DOWN } else { mix(t::ACTION_BUTTON_BACKGROUND_COLOR_IDLE, t::ACTION_BUTTON_BACKGROUND_COLOR_HOVER, hover) }), if self.hovered { t::ACTION_BUTTON_CONTENT_COLOR_HOVER } else { t::ACTION_BUTTON_CONTENT_COLOR })
         };

@@ -43,6 +43,9 @@ pub struct Scrubber {
     /// Compact mode's line state (canon row 172; QCView's CompactStrip): a 2-px scrub line through the band's middle with the
     /// playhead and the in / out marks — no ruler, no labels, no waveform. The same gesture, the same camera.
     pub compact: bool,
+    /// No band of its own: the line and the playhead only, for a scrubber set into a translucent bar (the Quick Look
+    /// preview's, canon row 615). The band and its hairline are the opaque strips' (QCView's timeline, its compact strip).
+    pub bare: bool,
     pub rect: Rect,
     /// px per second (physical); `None` = fit the whole duration to the track.
     pps: Option<f64>,
@@ -73,7 +76,7 @@ pub struct Scrubber {
 impl Default for Scrubber { fn default() -> Self { Scrubber::new() } }
 
 impl Scrubber {
-    pub fn new() -> Scrubber { Scrubber { compact: false, rect: Rect::ZERO, pps: None, scroll_x: 0.0, pan: None, track_w: 1.0, pressed: false, hover_x: None, last_press: None, hover_frame: None, failed: vec![], cache_wraps: false, end_inset: 0.0, notes: vec![], hover_note: None } }
+    pub fn new() -> Scrubber { Scrubber { compact: false, bare: false, rect: Rect::ZERO, pps: None, scroll_x: 0.0, pan: None, track_w: 1.0, pressed: false, hover_x: None, last_press: None, hover_frame: None, failed: vec![], cache_wraps: false, end_inset: 0.0, notes: vec![], hover_note: None } }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
     pub fn is_pressed(&self) -> bool { self.pressed }
     pub fn is_fit(&self) -> bool { self.pps.is_none() }
@@ -178,8 +181,7 @@ impl Scrubber {
     /// `waves`: the waveform layers, each (min, max) in −1..1 per TRACK pixel column for the visible range (the audio probe's memo).
     pub fn paint(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, s: &ScrubState, waves: &[WaveLayer]) {
         let r = self.rect; let hair = t::HAIRLINE as f64 * scale;
-        paint::rect(scene, r, t::SCRUBBER_BACKGROUND_COLOR);
-        paint::hline(scene, r.x0, r.x1, r.y0, hair, t::DIVIDER_COLOR);
+        if !self.bare { paint::rect(scene, r, t::SCRUBBER_BACKGROUND_COLOR); paint::hline(scene, r.x0, r.x1, r.y0, hair, t::DIVIDER_COLOR); }
         let dur = self.dur(s);
         if dur <= 0.0 { return }
         let pps = self.pps(s);
@@ -188,7 +190,7 @@ impl Scrubber {
         if self.compact {
             // the line through the middle (brighter while hovered or pressed), the in / out marks, the playhead
             let cy = (r.y0 + r.y1) / 2.0; let lh = 2.0 * scale;
-            paint::rect(scene, Rect::new(tx0, cy - lh / 2.0, tx1, cy + lh / 2.0), if self.hover_x.is_some() || self.pressed { t::BORDER_COLOR_HOVER } else { t::DIVIDER_COLOR });
+            paint::rect(scene, Rect::new(tx0, cy - lh / 2.0, tx1, cy + lh / 2.0), if self.hover_x.is_some() || self.pressed { t::BORDER_COLOR_HOVER } else if self.bare { t::BORDER_COLOR_DEFAULT } else { t::DIVIDER_COLOR });
             let mark_h = 10.0 * scale;
             if s.in_point >= 0 { let a = self.x_of_time(s.in_point as f64 / s.fps, s, scale); if a >= tx0 - 1.0 && a <= tx1 + 1.0 { paint::rect(scene, Rect::new(a, cy - mark_h / 2.0, a + lh, cy + mark_h / 2.0), t::SCRUBBER_IN_POINT_COLOR); } }
             if s.out_point >= 0 { let b = self.x_of_time((s.out_point + 1) as f64 / s.fps, s, scale); if b >= tx0 - 1.0 && b <= tx1 + 1.0 { paint::rect(scene, Rect::new(b - lh, cy - mark_h / 2.0, b, cy + mark_h / 2.0), t::SCRUBBER_OUT_POINT_COLOR); } }

@@ -18,6 +18,11 @@ final class QCVPreviewView: NSView {
     var handle: OpaquePointer?; var timer: Timer?
     override func makeBackingLayer() -> CALayer { CAMetalLayer() }
     override var isFlipped: Bool { true }
+    // The panel moves its window by a drag on its content, and holds a press back until it knows which it is: a held
+    // button then came through as a press and a release together, on the release (the owner's walk, 2026-11-26: rewind
+    // and fast-forward "treated as toggle states"). Our view never moves the window: every press is ours, at once.
+    override var mouseDownCanMoveWindow: Bool { false }
+    override var isOpaque: Bool { true }
     // the keys: ours once the picture has been clicked (the view is then the first responder); Space, the arrows and Escape
     // are the panel's and are passed up untouched
     override var acceptsFirstResponder: Bool { true }
