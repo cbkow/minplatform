@@ -11,6 +11,7 @@ import QuartzCore
 @_silgen_name("qlp_pointer") func qlp_pointer(_ p: OpaquePointer, _ x: Double, _ y: Double, _ kind: Int32)
 @_silgen_name("qlp_scroll") func qlp_scroll(_ p: OpaquePointer, _ dy: Double)
 @_silgen_name("qlp_key") func qlp_key(_ p: OpaquePointer, _ ch: UInt32, _ special: UInt32, _ pressed: Bool, _ isRepeat: Bool)
+@_silgen_name("qlp_debug") func qlp_debug(_ p: OpaquePointer, _ on: Bool)
 @_silgen_name("qlp_tick") func qlp_tick(_ p: OpaquePointer)
 @_silgen_name("qlp_close") func qlp_close(_ p: OpaquePointer?)
 
@@ -60,6 +61,7 @@ final class QCVPreviewView: NSView {
         v.handle = url.path.withCString { path in state.withCString { st in langs.withCString { lg in
             qlp_open(Unmanaged.passUnretained(v.layer!).toOpaque(), Unmanaged.passUnretained(v).toOpaque(), UInt32(Double(v.bounds.width) * s), UInt32(Double(v.bounds.height) * s), s, path, st, lg) } } }
         guard let h = v.handle else { handler(NSError(domain: "app.qcview.quicklook", code: 1, userInfo: [NSLocalizedDescriptionKey: "no drawing surface"])); return }
+        if Bundle.main.object(forInfoDictionaryKey: "QCVQuickLookReadout") as? Bool == true { qlp_debug(h, true) }   // a walk build's
         var w: UInt32 = 0, ht: UInt32 = 0; qlp_size(h, &w, &ht)
         if w > 0 && ht > 0 { preferredContentSize = NSSize(width: Double(w) / s, height: Double(ht) / s) }
         qlp_tick(h)

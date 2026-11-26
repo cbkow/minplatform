@@ -80,6 +80,8 @@ pub struct Preview {
     inside: bool, moved: Instant, pointer: (f64, f64), bar: Ramp, bar_rect: Rect, dirty: bool,
     /// the mute carried in from the last file (kept as it was by a still)
     was_muted: bool, presented: bool,
+    /// a walk build's readout (`qlp_debug`): the pointer events counted (down, up, leave) and the last one
+    debug: bool, seen: [u32; 3], last: &'static str,
 }
 
 fn frame(path: &str, layer: &str) -> Result<Frame, String> {
@@ -137,7 +139,7 @@ impl Preview {
         if let Some(v) = self.video.as_mut() {
             let now = Instant::now();
             match v.t.tick(now) { Some(d) => { if let Err(e) = self.presenter.engine.show(&d.frame) { self.error = Some(e.to_string()); } self.dirty = true; } None => v.t.idle_refresh() }
-            if v.t.is_playing() || Playback::is_scrubbing(&v.t) || v.tips.tick(now) { self.dirty = true; }
+            if v.t.is_playing() || Playback::is_scrubbing(&v.t) || v.t.is_fast_seeking() || v.tips.tick(now) || self.debug { self.dirty = true; }
         }
         if let Some(Ok(p)) = self.pass_rx.as_ref().map(|rx| rx.try_recv()) { self.pass = Some(Rc::new(RefCell::new(p))); self.pass_rx = None; self.color(); }
         self.pass_rx.is_some()
@@ -202,6 +204,11 @@ impl Preview {
                 }
             }
         }
+        if self.debug { if let Some(v) = self.video.as_ref() {
+            let line = format!("fast seek: {}  audio shuttle: {}  playing: {}  frame {} / {}  has sound: {}  rew held: {}  ff held: {}  pointer down {} up {} leave {} last {}", v.t.is_fast_seeking(), v.t.audio.shuttle_active(), v.t.is_playing(), v.t.current_frame(), v.t.frame_count(), v.t.audio.has_audio(), v.rew.is_pressed(), v.ff.is_pressed(), self.seen[0], self.seen[1], self.seen[2], self.last);
+            let l = self.fonts.layout_fit(&line, Family::Mono, 12.0 * k as f32, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE, w - 24.0 * k);
+            paint::rect(&mut scene, Rect::new(0.0, 0.0, w, l.height() as f64 + 12.0 * k), t::BACKGROUND_LAYER_1_COLOR.with_alpha(0.8)); draw_layout(&mut scene, &l, Affine::translate((12.0 * k, 6.0 * k)));
+        } }
         let dst = self.layer.scene_mut(); dst.reset(); dst.append(&scene, None);
         self.layer.render(&self.presenter.engine.device, &self.presenter.engine.queue);
         // Not presented (the panel has not put the view on screen yet - the surface says "occluded" - or a drawable was not
@@ -251,7 +258,7 @@ pub unsafe extern "C" fn qlp_open(ca_layer: *mut c_void, ns_view: *mut c_void, w
         (dims, dot(vec![format!("{} × {}", dims.0, dims.1), kind.to_string(), min_image::exr::compression(&path).unwrap_or_default().to_string()]))
     };
     let (tx, rx) = mpsc::channel(); let now = Instant::now();
-    let mut p = Preview { video, was_muted, presented: false, presenter, layer, fonts: Fonts::new(), scale, size: (w, h), path, state, dims, facts, error,
+    let mut p = Preview { debug: false, seen: [0; 3], last: "-", video, was_muted, presented: false, presenter, layer, fonts: Fonts::new(), scale, size: (w, h), path, state, dims, facts, error,
         layers: Picker::new(names, layer_at), colors: Picker::new(color_names, color_at), presets, pass_rx: None, pass: None, bound: false,
         job: 0, rx, tx, inside: false, moved: now - REST, pointer: (-1.0, -1.0), bar: Ramp::new(0.0, 160), bar_rect: Rect::ZERO, dirty: true };
     p.decode(); p.color();
@@ -273,6 +280,7 @@ pub unsafe extern "C" fn qlp_resize(p: *mut Preview, w: u32, h: u32, scale: f64)
 pub unsafe extern "C" fn qlp_pointer(p: *mut Preview, x: f64, y: f64, kind: i32) { let s = unsafe { &mut *p }; let now = Instant::now();
     let e = match kind { 0 => Event::Move { x, y }, 1 => Event::Down { x, y, button: Button::Primary }, 2 => Event::Up { x, y, button: Button::Primary }, _ => Event::Leave };
     s.inside = kind != 3; if kind != 3 { s.pointer = (x, y); s.moved = now; }
+    match kind { 1 => { s.seen[0] += 1; s.last = "down"; } 2 => { s.seen[1] += 1; s.last = "up"; } 3 => { s.seen[2] += 1; s.last = "leave"; } _ => {} }
     let bounds = Rect::new(0.0, 0.0, s.size.0 as f64, s.size.1 as f64);
     let menu_open = s.layers.is_open() || s.colors.is_open(); let mut keep = false;
     if let (Some(v), false) = (s.video.as_mut(), menu_open) {
@@ -311,6 +319,11 @@ pub unsafe extern "C" fn qlp_key(p: *mut Preview, ch: u32, special: u32, pressed
     if !matches!(a, Action::ShuttleBegin(_) | Action::ShuttleEnd | Action::Step(_) | Action::TogglePlayback | Action::SeekToStart | Action::SeekToEnd | Action::ToggleMute) { return }
     Playback::apply(&mut v.t, a, now); if a == Action::ToggleMute { s.keep(); } s.dirty = true;
 }
+
+/// A walk build's readout along the top (the bundle's Info.plist key `QCVQuickLookReadout`): what the player and the
+/// pointer are doing. A Developer ID container's log cannot be read from outside, so the screen is the log.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qlp_debug(p: *mut Preview, on: bool) { let s = unsafe { &mut *p }; s.debug = on; s.dirty = true; }
 
 /// The wheel, pixels (positive = further down a list): an open menu scrolls.
 #[unsafe(no_mangle)]

@@ -7,6 +7,7 @@
 # into qcview.app is make-app.sh's, at the packaging step.
 #   zsh packaging/macos/make-quicklook.sh            build, sign, register (needs packaging/macos/make-app.sh run once:
 #                                                    the extension loads the staged bundle's OpenEXR)
+#   zsh packaging/macos/make-quicklook.sh --readout  the same, with the player's readout along the top of the preview
 #   zsh packaging/macos/make-quicklook.sh --remove   take the walk bundle off the system again
 #   zsh packaging/macos/make-quicklook.sh --into <qcview.app> --id <identifier prefix>
 #                                                    make-app.sh's: the two extensions built into that bundle's
@@ -14,7 +15,7 @@
 #                                                    is signed or registered (the caller signs)
 set -euo pipefail
 ROOT="$PWD"; SRC="$ROOT/apps/qcv-quicklook"; OUT="$ROOT/target/dist/quicklook-walk"; APP="$OUT/QCView Quick Look Walk.app"; C="$APP/Contents"; X="$C/PlugIns/QCViewPreview.appex"; T="$C/PlugIns/QCViewThumbnail.appex"
-BID=app.qcview.walk; INTO=""
+BID=app.qcview.walk; INTO=""; READOUT=""; [ "${1:-}" = "--readout" ] && READOUT=1
 if [ "${1:-}" = "--into" ]; then INTO="$2"; [ "${3:-}" = "--id" ] && BID="$4"; APP="$INTO"; C="$APP/Contents"; X="$C/PlugIns/QCViewPreview.appex"; T="$C/PlugIns/QCViewThumbnail.appex"; OUT="$ROOT/target/dist/quicklook-obj"
   [ -f "$C/Frameworks/libavcodec.63.dylib" ] || { echo "$INTO has no Frameworks yet: build the extensions after the libraries are copied" >&2; exit 1; }; fi
 LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
@@ -31,13 +32,14 @@ if [ -z "$INTO" ]; then
   mkdir -p "$OUT/obj"; print 'print("QCView Quick Look walk: this application only carries the extension")' > "$OUT/obj/Host.swift"; xcrun swiftc -O -target arm64-apple-macos13.0 "$OUT/obj/Host.swift" -o "$C/MacOS/QCViewQuickLookWalk"
 fi
 rm -rf "$X" "$T"; mkdir -p "$X/Contents/MacOS" "$T/Contents/MacOS" "$OUT/obj"
-python3 - "$C" "$BID" "$VERSION" "$INTO" <<'PY'
+python3 - "$C" "$BID" "$VERSION" "$INTO" "$READOUT" <<'PY'
 import plistlib, sys, pathlib
 c, bid, ver = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 base = {"CFBundleInfoDictionaryVersion": "6.0", "CFBundleShortVersionString": ver, "CFBundleVersion": ver, "LSMinimumSystemVersion": "13.0"}
 if not sys.argv[4]: plistlib.dump(dict(base, CFBundleExecutable="QCViewQuickLookWalk", CFBundleIdentifier=bid, CFBundleName="QCView Quick Look Walk", CFBundlePackageType="APPL", LSUIElement=True), open(c / "Info.plist", "wb"))
 def ext(name, cls, point, attrs):
-    plistlib.dump(dict(base, CFBundleExecutable=name, CFBundleIdentifier=bid + "." + cls, CFBundleName=name, CFBundleDisplayName="QCView", CFBundlePackageType="XPC!",
+    extra = {"QCVQuickLookReadout": True} if cls == "preview" and len(sys.argv) > 5 and sys.argv[5] else {}
+    plistlib.dump(dict(base, **extra, CFBundleExecutable=name, CFBundleIdentifier=bid + "." + cls, CFBundleName=name, CFBundleDisplayName="QCView", CFBundlePackageType="XPC!",
         NSExtension={"NSExtensionPointIdentifier": point, "NSExtensionPrincipalClass": "QCV" + cls.capitalize(), "NSExtensionAttributes": attrs}), open(c / f"PlugIns/{name}.appex/Contents/Info.plist", "wb"))
 # canon row 606: MXF and EXR only, for the preview and for the thumbnails.
 ext("QCViewPreview", "preview", "com.apple.quicklook.preview", {"QLSupportedContentTypes": ["com.ilm.openexr-image", "org.smpte.mxf"], "QLIsDataBasedPreview": False, "QLSupportsSearchableItems": False})
