@@ -75,6 +75,11 @@ def main():
         for sub in ("Contents/MacOS", "Contents/Helpers", "Contents/Frameworks"):
             d = os.path.join(stage, sub)
             if os.path.isdir(d): shipped += os.listdir(d)
+        # the Quick Look extensions' programs (Contents/PlugIns/<name>.appex/Contents/MacOS/<name>): ours, built from this lock file
+        plug = os.path.join(stage, "Contents/PlugIns")
+        for x in (os.listdir(plug) if os.path.isdir(plug) else []):
+            d = os.path.join(plug, x, "Contents/MacOS")
+            if os.path.isdir(d): shipped += os.listdir(d)
         orphans = [f for f in shipped if not any(fnmatch.fnmatch(f, p) for p in patterns)]
         if orphans: die("shipped without a notices entry: " + ", ".join(sorted(orphans)) + " — add them to components.json")
 

@@ -22,8 +22,18 @@ for nested in "$SPV/XPCServices/Downloader.xpc" "$SPV/XPCServices/Installer.xpc"
 sign "$APP/Contents/Frameworks/Sparkle.framework"
 for f in "$APP"/Contents/Frameworks/*.dylib; do sign "$f"; done
 for f in "$APP"/Contents/Helpers/*; do sign "$f"; done
+# the Quick Look extensions (canon rows 605-614): the release identifiers (make-app.sh stages them under others, see there),
+# then each signed with its sandbox BEFORE the application - and the application never with --deep, which would sign them
+# again without their entitlements
+for x in "$APP"/Contents/PlugIns/*.appex; do
+  [ -d "$x" ] || continue
+  id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$x/Contents/Info.plist")"; /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${id/app.qcview.player.staged/app.qcview.player}" "$x/Contents/Info.plist"
+  sign --entitlements "$ROOT/packaging/macos/quicklook.entitlements" "$x"
+  codesign -d --entitlements - "$x" 2> /dev/null | grep -q "com.apple.security.app-sandbox" || { echo "the extension lost its sandbox: $x" >&2; exit 1; }
+done
 sign "$APP"
 codesign --verify --deep --strict "$APP"
+for x in "$APP"/Contents/PlugIns/*.appex; do [ -d "$x" ] || continue; case "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$x/Contents/Info.plist")" in app.qcview.player.preview|app.qcview.player.thumbnail) ;; *) echo "an extension without its release identifier: $x" >&2; exit 1 ;; esac; done
 notarize() { xcrun notarytool submit "$1" --keychain-profile "$PROFILE" --wait 2>&1 | grep -E "^\s*(id|status):" | tail -2; }
 if [ $SKIP = 0 ]; then
   echo "==> notarize the app (waits for Apple)"

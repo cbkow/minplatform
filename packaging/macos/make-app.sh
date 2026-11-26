@@ -58,14 +58,22 @@ done
 # Sparkle (tools/sparkle/fetch.sh): the framework whole, symlinks kept; the app loads it at run time
 [ -d "$ROOT/external/sparkle/Sparkle.framework" ] || { echo "run tools/sparkle/fetch.sh first: the release carries its updater" >&2; exit 1; }
 ditto "$ROOT/external/sparkle/Sparkle.framework" "$FW/Sparkle.framework"
+# the Quick Look extensions (canon rows 605-614): Contents/PlugIns/QCViewPreview.appex and QCViewThumbnail.appex, on the
+# libraries above. STAGED identifiers here: an extension's container belongs to the signature that first ran it
+# (docs/spikes/S20-quicklook.md), and this bundle is signed ad hoc - were it ever started under the release identifiers
+# on this machine, the released extension would hang here for ever. sign-macos.sh gives the release identifiers to its copy.
+zsh "$ROOT/packaging/macos/make-quicklook.sh" --into "$APP" --id app.qcview.player.staged
+QL=("$C"/PlugIns/*.appex/Contents/MacOS/*)
 # the third-party notices (canon row 252): generated for this bundle, and it FAILS if a shipped binary has no entry or a
 # crate's licence is not an accepted one. About ▸ Licenses… opens it.
 python3 "$ROOT/packaging/notices/make_notices.py" macos --out "$C/Resources/THIRD-PARTY-NOTICES.html" --stage "$APP"
 leaks=0
-for f in "$EXE" "$C/Helpers/ffmpeg" "$C/Helpers/ffprobe" "$FW"/*.dylib; do
+for f in "$EXE" "$C/Helpers/ffmpeg" "$C/Helpers/ffprobe" "$FW"/*.dylib "${QL[@]}"; do
   for dep in $(deps_of "$f"); do echo "LEAK ${f:t} -> $dep" >&2; leaks=1; done
   m="$(vtool -show-build "$f" | awk '$1=="minos"{print $2}')"; [ "$m" = "13.0" ] || { echo "minos $m: ${f:t}" >&2; leaks=1; }
 done
 [ $leaks = 0 ] || exit 1
-codesign --force -s - "$FW"/*.dylib "$C/Helpers"/* 2> /dev/null; codesign --force --deep -s - "$FW/Sparkle.framework" 2> /dev/null; codesign --force -s - "$APP" 2> /dev/null
+codesign --force -s - "$FW"/*.dylib "$C/Helpers"/* 2> /dev/null; codesign --force --deep -s - "$FW/Sparkle.framework" 2> /dev/null
+for x in "$C"/PlugIns/*.appex; do codesign --force -s - --entitlements "$ROOT/packaging/macos/quicklook.entitlements" "$x" 2> /dev/null; done   # before the app, with their sandbox
+codesign --force -s - "$APP" 2> /dev/null
 echo "built $APP — $(ls "$FW" | wc -l | tr -d ' ') dylibs, $(du -sh "$APP" | cut -f1)"
