@@ -65,7 +65,9 @@ final class QCVPreviewView: NSView {
         guard let h = v.handle else { handler(NSError(domain: "app.qcview.quicklook", code: 1, userInfo: [NSLocalizedDescriptionKey: "no drawing surface"])); return }
         if Bundle.main.object(forInfoDictionaryKey: "QCVQuickLookReadout") as? Bool == true { qlp_debug(h, true) }   // a walk build's
         var w: UInt32 = 0, ht: UInt32 = 0; qlp_size(h, &w, &ht)
-        if w > 0 && ht > 0 { preferredContentSize = NSSize(width: Double(w) / s, height: Double(ht) / s) }
+        // the picture's size in POINTS, as the system's own previews ask (a 1920 x 1080 movie wants 1920 x 1080 points and the
+        // panel fits that to the screen); asked in pixels, as 3.0.5 did, the panel was half that on a Retina screen
+        if w > 0 && ht > 0 { preferredContentSize = NSSize(width: Double(w), height: Double(ht)) }
         qlp_tick(h)
         v.timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak v] _ in if let h = v?.handle { qlp_held(h, NSEvent.pressedMouseButtons & 1 != 0); qlp_tick(h) } }   // the button read here: the panel keeps a still press until its release (qlp_held)
         if let t = v.timer { RunLoop.main.add(t, forMode: .common) }
