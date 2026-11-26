@@ -34,7 +34,19 @@ audio unit), frames shown / dropped / late, the first picture's time, the peak m
 
 ## Measurements
 
-None yet.
+The owner's walk, 2026-11-26, Finder's space-bar panel, the Developer ID build:
+
+- "looks great. The sound works": the picture plays and the tone is heard.
+- A picture of the panel on the generated DNxHR HQ clip (1920 x 1080, 25 fps, 24-bit sound in the MXF), two seconds in:
+  `decode: software (VideoToolbox context made)`, `audio unit ok in 18 ms, file has sound: true`, `shown 54 dropped 0
+  late 0`, `peak memory 185 MB`, `no key yet`. So: the VideoToolbox device context is made inside the sandbox; DNxHR has
+  no hardware decoder and plays in software; the CoreAudio output unit starts in 18 ms and plays.
+- The readout's "first picture 0 ms" is the spike's fault (its clock starts after the open), not a measurement.
+- "I don't think the thumbnails should be full video though": Finder's small previews (the preview column, the gallery,
+  Get Info) show the same extension, and the spike plays wherever it is shown. For the player: small views are a still.
+
+Still owed for the bar: the ProRes clip past 30 seconds (dropped, late, the peak memory, whether its decode says
+VideoToolbox), the keys after a click, and whether the sound stops when the panel closes or moves to another file.
 
 ## Verdict
 
