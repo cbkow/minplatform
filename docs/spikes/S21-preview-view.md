@@ -66,6 +66,12 @@ four layers. The extension is 37 MB (the Rust library unstripped, with its debug
    permitted" on its log); an ad hoc one is readable. With S20's finding 2: diagnostics of the released extension
    cannot be a file another program reads.
 
+6. **Finder refuses an ad hoc extension that `qlmanage -p` accepts.** From Finder the panel said "Extension
+   app.qcview.spike.s21a.preview not found." (after Quick Look's server and cache were reset too); the same spike
+   under the Developer ID signature, not notarized, loaded from Finder at once (the owner, on their own EXR: "this
+   works"). So a walk build is signed with the Developer ID under a walk identifier, and its readouts are on screen
+   (the bar shows the timings and the keys), since its container's log is closed (finding 5).
+
 ## Not seen
 
 - The pointer: hover showing the bar, a press opening the popup, a choice changing the layer (the log records each).

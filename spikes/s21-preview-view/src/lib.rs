@@ -80,7 +80,7 @@ pub unsafe extern "C" fn s21_draw(p: *mut S21) { let s = unsafe { &mut *p }; let
     let dst = s.layer.scene_mut(); dst.reset(); dst.append(&scene, None);
     s.layer.render(&s.presenter.engine.device, &s.presenter.engine.queue);
     let ok = s.presenter.draw(|| {});
-    if ok && !s.drawn { s.drawn = true; note(&format!("first picture {} ms after the open began", ms(s.opened))); }
+    if ok && !s.drawn { s.drawn = true; let m = ms(s.opened); s.line = format!("first picture {m} ms; {}", s.line); note(&format!("first picture {m} ms after the open began")); }
 }
 
 #[unsafe(no_mangle)]
