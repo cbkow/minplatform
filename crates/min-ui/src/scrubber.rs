@@ -190,7 +190,7 @@ impl Scrubber {
         if self.compact {
             // the line through the middle (brighter while hovered or pressed), the in / out marks, the playhead
             let cy = (r.y0 + r.y1) / 2.0; let lh = 2.0 * scale;
-            paint::rect(scene, Rect::new(tx0, cy - lh / 2.0, tx1, cy + lh / 2.0), if self.hover_x.is_some() || self.pressed { t::BORDER_COLOR_HOVER } else if self.bare { t::BORDER_COLOR_DEFAULT } else { t::DIVIDER_COLOR });
+            paint::rect(scene, Rect::new(tx0, cy - lh / 2.0, tx1, cy + lh / 2.0), if self.bare { min_theme::Color::rgba(1.0, 1.0, 1.0, if self.hover_x.is_some() || self.pressed { 0.5 } else { 0.34 }) } else if self.hover_x.is_some() || self.pressed { t::BORDER_COLOR_HOVER } else { t::DIVIDER_COLOR });   // bare: a light line, the tokens' greys are faint on glass (the owner 2026-11-26)
             let mark_h = 10.0 * scale;
             if s.in_point >= 0 { let a = self.x_of_time(s.in_point as f64 / s.fps, s, scale); if a >= tx0 - 1.0 && a <= tx1 + 1.0 { paint::rect(scene, Rect::new(a, cy - mark_h / 2.0, a + lh, cy + mark_h / 2.0), t::SCRUBBER_IN_POINT_COLOR); } }
             if s.out_point >= 0 { let b = self.x_of_time((s.out_point + 1) as f64 / s.fps, s, scale); if b >= tx0 - 1.0 && b <= tx1 + 1.0 { paint::rect(scene, Rect::new(b - lh, cy - mark_h / 2.0, b, cy + mark_h / 2.0), t::SCRUBBER_OUT_POINT_COLOR); } }
