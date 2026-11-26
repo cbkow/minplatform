@@ -3,8 +3,7 @@
 **Status: VERDICT (macOS 27.2) - PASS (2026-11-26). QCView's presenter draws an EXR into the Quick Look preview's own
 view on the extended-range surface, from a sandboxed extension, with a `min-ui` picker over it that the pointer opens
 and chooses from. In Finder, on the owner's own files: the first picture 165 ms after the request (bar: 300 ms), a
-layer changed in 34 ms. NOT answered: which keys reach the view, and how moving from file to file with Finder's arrows
-behaves.**
+layer changed in 34 ms. Finder's arrows move from file to file. NOT answered: which keys reach the view (left for the MXF's player).**
 
 ## Why
 
@@ -75,7 +74,9 @@ four layers. The extension is 37 MB (the Rust library unstripped, with its debug
 ## The owner's walk (2026-11-26, Finder, the Developer ID build, their own EXR files)
 
 "looks great. Layers work. 165ms first 34ms change": the bar shows, the popup opens and a choice changes the layer;
-the bar's own readouts were 165 ms to the first picture and 34 ms for a layer change.
+the bar's own readouts were 165 ms to the first picture and 34 ms for a layer change. Later: "arrows work" (Finder's
+arrows move from file to file); a picked layer is lost at the next file (the spike keeps nothing - canon row 609 rules
+that the extension keeps it); the keys were not judged, an image has no use for them.
 
 ## Not seen
 
