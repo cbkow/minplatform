@@ -5457,6 +5457,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "s21-preview-view"
+version = "0.0.0"
+dependencies = [
+ "kurbo 0.13.1",
+ "min-image",
+ "min-present",
+ "min-theme",
+ "min-ui",
+ "vello",
+ "wgpu",
+]
+
+[[package]]
 name = "s3-text"
 version = "0.0.0"
 dependencies = [

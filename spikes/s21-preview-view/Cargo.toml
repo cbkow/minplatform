@@ -1,0 +1,20 @@
+[package]
+name = "s21-preview-view"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "SPIKE S21 (dies after its verdict): the family's presenter and a min-ui picker drawn into a Quick Look preview's own view - an EXR, its layers in a popup, the pointer"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+min-present = { path = "../../crates/min-present" }
+min-ui = { path = "../../crates/min-ui" }
+min-theme = { path = "../../crates/min-theme" }
+min-image = { path = "../../crates/min-image" }
+vello = { workspace = true }
+kurbo = { workspace = true }
+wgpu = { workspace = true }
