@@ -89,6 +89,17 @@ The picture was written out and looked at (the ProRes MXF: the test pattern, rig
 5. The unified log gave none of the extensions' lines back (`log show`), and the thumbnail extension left no file in
    its container although the preview extension did. Plan the release's diagnostics on something else.
 
+## Later the same day: the EXR THUMBNAIL is not ours any more (unexplained)
+
+When the real thumbnail extension was built (canon row 612), the system's thumbnail of an EXR came from the system's
+own generator again, and no extension's process was started for the request - not the walk build's, and not this
+spike's either when it was registered again, ad hoc and under the Developer ID, alone and beside the walk build, after
+`qlmanage -r`, `qlmanage -r cache` and a restart of the thumbnails agent. An MXF's request reached each of them every
+time. The morning's placard run above (EXR "OURS", the magenta picture looked at) was real; what changed between is
+not known. Finding 1 therefore stands for the PREVIEW (walked by the owner all day) and for MXF, DPX and MKV
+thumbnails; **for the EXR thumbnail it was seen once and could not be had again.** Not tried: after a restart of the
+Mac, another machine, a notarized bundle, an EXR type declaration in the host's Info.plist (Tristimulator imports one).
+
 ## Not seen
 
 - The pointer and the keys inside our view (the preview has a slider, a button and a key readout for this): a person's

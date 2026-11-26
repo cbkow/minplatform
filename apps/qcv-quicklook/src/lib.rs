@@ -11,6 +11,8 @@ use min_ui::{anim::Ramp, fonts::draw_layout, paint, picker::Picker, Button, Even
 use qcv_color::{model::{builtins, ClipChain, Preset}, Chain, MinColorPass};
 use std::{cell::RefCell, ffi::{c_char, c_void, CStr}, path::PathBuf, rc::Rc, sync::mpsc, time::{Duration, Instant}};
 
+pub mod thumb;
+
 macro_rules! catalogs { ($($code:literal),*) => { &[$(($code, include_str!(concat!("../../qcv/i18n/qcview_", $code, ".po")))),*] } }
 /// QCView's own catalogs: the extension's strings live in them (context `QuickLook`, and `ColorPanel` for "Color Off").
 const CATALOGS: &[(&str, &str)] = catalogs!("en", "de", "es", "fr", "it", "ja", "ko", "pl", "pt_BR", "ru", "uk", "zh_CN");

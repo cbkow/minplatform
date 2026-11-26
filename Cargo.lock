@@ -4859,6 +4859,7 @@ dependencies = [
  "min-ui",
  "peniko",
  "qcv-color",
+ "qcv-player",
  "serde_json",
  "vello",
  "wgpu",

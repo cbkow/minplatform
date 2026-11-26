@@ -18,6 +18,7 @@ min-ui = { path = "../../crates/min-ui" }
 min-theme = { path = "../../crates/min-theme" }
 min-image = { path = "../../crates/min-image" }
 min-i18n = { path = "../../crates/min-i18n" }
+qcv-player = { path = "../../crates/qcv-player" }   # the thumbnail of a video: the family's decoder and its poster stage
 qcv-color = { path = "../../crates/qcv-color", default-features = false }
 vello = { workspace = true }
 peniko = { workspace = true }
