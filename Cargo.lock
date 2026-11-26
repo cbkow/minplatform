@@ -5450,6 +5450,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "s20-quicklook"
+version = "0.0.0"
+dependencies = [
+ "ffmpeg-sys-next",
+]
+
+[[package]]
 name = "s3-text"
 version = "0.0.0"
 dependencies = [

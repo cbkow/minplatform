@@ -1,0 +1,14 @@
+[package]
+name = "s20-quicklook"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "SPIKE S20 (dies after its verdict): a Quick Look extension's decode - the first frame of a file through the family's FFmpeg, as RGBA, called from the Swift extension over a C function"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+ffmpeg-sys-next = { workspace = true }
