@@ -179,6 +179,32 @@ fn exr_multipart_layers() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// A layer without R, G and B is shown grey (row 611): a one-channel file (FFmpeg writes it as `Y`), and the same picture
+/// as a part of a multi-part file beside a colour part. Skipped without ffmpeg / exrmultipart.
+#[test]
+fn exr_single_channel_is_grey() {
+    let d = std::env::temp_dir().join(format!("min-image-grey-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap();
+    let ff = |src: &str, fmt: &str, name: &str| std::process::Command::new("ffmpeg").args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", src, "-frames:v", "1", "-pix_fmt", fmt, "-c:v", "exr"]).arg(d.join(name)).status().map(|s| s.success()).unwrap_or(false);
+    if !(ff("testsrc2=size=64x36", "grayf32le", "y.exr") && ff("testsrc2=size=64x36", "gbrpf32le", "rgb.exr")) { eprintln!("ffmpeg missing: skipped"); return }
+    let y = d.join("y.exr").to_string_lossy().into_owned();
+    let img = load(&y, "", 1).expect("a one-channel EXR loads");
+    assert_eq!((img.width, img.height, img.planes.len(), img.alpha), (64, 36, 3, false));
+    assert!(img.planes[0] == img.planes[1] && img.planes[1] == img.planes[2], "the three planes are the one channel");
+    assert!(img.planes[0].iter().any(|b| *b != 0), "and it has a picture");
+    assert!(min_image::load_thumbnail(&y, "default", 32).is_ok());
+    let multi = d.join("multi.exr");
+    let ok = std::process::Command::new("exrmultipart").arg("-combine").arg("-i").arg(format!("{}::beauty", d.join("rgb.exr").display())).arg(format!("{}::depth", d.join("y.exr").display())).arg("-o").arg(&multi)
+        .stdout(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+    if !ok { eprintln!("exrmultipart missing: skipped"); let _ = std::fs::remove_dir_all(&d); return }
+    let m = multi.to_string_lossy();
+    let (beauty, depth) = (load(&m, "beauty", 1).unwrap(), load(&m, "depth", 1).unwrap());
+    assert_ne!(beauty.planes[0], beauty.planes[2], "the colour part keeps its colour");
+    assert_eq!(depth.planes[0], img.planes[0], "the grey part is the one-channel picture");
+    assert!(depth.planes[0] == depth.planes[1] && depth.planes[1] == depth.planes[2]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// DPX (ours, row 190): every layout FFmpeg's encoder writes, both byte orders — IDENTICAL to FFmpeg's decode (10 / 12-bit
 /// compared with the samples widened the loader's way, so the file's bits must match exactly).
 #[test]

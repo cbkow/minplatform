@@ -96,8 +96,19 @@ pub fn load(path: &str, layer: &str, threads: usize) -> Result<Image, Error> {
     let mut prefix = if layer.is_empty() { String::new() } else { format!("{layer}.") };
     if !has(&format!("{prefix}R")) && !layer.is_empty() { prefix.clear(); }
     if !has(&format!("{prefix}R")) && layer.is_empty() && let Some(fb) = chans.iter().find_map(|(c, _)| c.strip_suffix(".R").map(|s| s.to_string())) { prefix = format!("{fb}."); }
-    let names = ["G", "B", "R", "A"].map(|c| format!("{prefix}{c}"));   // the presenter's planar order
-    if !(has(&names[0]) && has(&names[1]) && has(&names[2])) { return Err(Error::NoRgb(path.into(), layer.into())) }
+    let mut names = ["G", "B", "R", "A"].map(|c| format!("{prefix}{c}"));   // the presenter's planar order
+    // A layer without R, G and B (a depth, a matte: canon row 611, ours - QCView refused it) is shown grey: its `Y`,
+    // else its first channel that is not the alpha, read once and copied to the three planes. Values as stored.
+    let mut grey = false;
+    if !(has(&names[0]) && has(&names[1]) && has(&names[2])) {
+        let own = if layer.is_empty() || layer == "default" { String::new() } else { format!("{layer}.") };
+        let of = |pre: &str| -> Option<String> {
+            let mine: Vec<&str> = chans.iter().filter_map(|(c, _)| c.strip_prefix(pre)).filter(|r| !r.is_empty() && !r.contains('.') && *r != "A").collect();
+            mine.iter().find(|r| **r == "Y").or(mine.first()).map(|r| format!("{pre}{r}"))
+        };
+        let Some((g, pre)) = of(&own).map(|g| (g, own.clone())).or_else(|| if own.is_empty() { None } else { of("").map(|g| (g, String::new())) }) else { return Err(Error::NoRgb(path.into(), layer.into())) };
+        names = [g, String::new(), String::new(), format!("{pre}A")]; grey = true;
+    }
     let alpha = has(&names[3]);
     let nplanes = if alpha { 4 } else { 3 };
     // decode into data-window planes, chunk by chunk, in parallel
@@ -152,6 +163,7 @@ pub fn load(path: &str, layer: &str, threads: usize) -> Result<Image, Error> {
     });
     let f = failed.load(Ordering::Relaxed);
     if f > 0 { return Err(Error::Decode(path.into(), format!("{f} of {} chunks failed", chunks.len()))) }
+    if grey { let g = planes[0].clone(); planes[1].copy_from_slice(&g); planes[2].copy_from_slice(&g); }
     // the display window: the fast path when it equals the data window, else the intersection copied in, zeros around it
     if disp.min.x == data.min.x && disp.min.y == data.min.y && w == dw && h == dh {
         return Ok(Image { width: w as u32, height: h as u32, sample: Sample::F16, planes, pitch: pitch as u32, alpha, sentinel: None })
