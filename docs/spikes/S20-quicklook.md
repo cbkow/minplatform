@@ -100,6 +100,9 @@ not known. Finding 1 therefore stands for the PREVIEW (walked by the owner all d
 thumbnails; **for the EXR thumbnail it was seen once and could not be had again.** Tried after that, no change: the EXR type declared as imported, with a document type, in the host's Info.plist (as
 Tristimulator's host has it). Not tried: after a restart of the Mac, another machine, a notarized bundle.
 
+With QCView 3.0.6 installed from the release (notarized, its own identifiers) the owner saw the same: an EXR's
+icon is the system's. Accepted by the owner that day; the released extension still names the type.
+
 ## Later the same day: QuickTime movies and MPEG-4 are NOT handed over
 
 Asked by the owner for the `.mov` files QuickTime shows nothing for (DNxHR 444 in a QuickTime container). The walk
