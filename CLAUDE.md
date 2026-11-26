@@ -1,6 +1,10 @@
 # minplatform — working notes for Claude
 
-- **State (2026-11-23):** UFB 2.0.8 went out (its line below); the Windows build machine was replaced that day and has built only UFB so far. On 2026-11-19 minRender 1.0.2, QCBridge 0.5.0 and UFB 2.0.7 went out (their lines below). **QCView 3.0.4 is RELEASED on macOS
+- **State (2026-11-26): QCView 3.0.5 is RELEASED on macOS and PACKED for the Store (rows 604-616, tag `v3.0.5`: a Quick Look
+  preview and thumbnails for EXR and MXF - `apps/qcv-quicklook`, two sandboxed extensions in the bundle's `PlugIns`, read
+  `docs/spikes/S20-quicklook.md`, `S21`, `S22` and `packaging/macos/make-quicklook.sh` before touching them; macOS keeps MOV
+  and MP4 for itself -, rewind and fast-forward in the compact strip, EXR layers without RGB shown grey; the Windows
+  machine's vcpkg pin moved, `tools/deps/vcpkg-windows.pin`).** Before, 2026-11-23: UFB 2.0.8 went out (its line below); the Windows build machine was replaced that day and has built only UFB so far. On 2026-11-19 minRender 1.0.2, QCBridge 0.5.0 and UFB 2.0.7 went out (their lines below). **QCView 3.0.4 is RELEASED on macOS
   and SUBMITTED to the Store by the owner (2026-11-19, rows 596-598, tag `v3.0.4`: ProRes RAW plays again - its mosaic made colour on
   the GPU, `bayer.wgsl`, with the clip's own colour data, linear Rec.2020 to the chain - and six camera encodings in
   minColor from minColorAE 0.1.7's core; the LAST section of `docs/phase2/handoff-2026-11-10.md`).** minColorAE 0.1.7
