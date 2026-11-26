@@ -7,8 +7,9 @@ use kurbo::{Affine, Rect};
 use min_i18n::trc;
 use min_present::{Chroma, ColorMeta, ColorPass, Frame, Matrix, Output, Pixels, PlanarLayout, Plane, Presenter, Primaries, Range, Transfer};
 use min_theme::tokens as t;
-use min_ui::{anim::Ramp, fonts::draw_layout, paint, picker::Picker, Button, Event, Family, Fonts, UiLayer};
+use min_ui::{anim::Ramp, fonts::draw_layout, paint, picker::Picker, ActionButton, Button, Event, Family, Fonts, Response, ScrubCmd, ScrubState, Scrubber, Tooltips, UiLayer};
 use qcv_color::{model::{builtins, ClipChain, Preset}, Chain, MinColorPass};
+use qcv_player::{source::Source, Action, AudioPlayer, HwDevice, Playback, ScrubOptions, TimecodeFormatter, Transport, TransportOptions};
 use std::{cell::RefCell, ffi::{c_char, c_void, CStr}, path::PathBuf, rc::Rc, sync::mpsc, time::{Duration, Instant}};
 
 pub mod thumb;
@@ -29,7 +30,45 @@ impl ColorPass for SharedPass {
     fn run(&mut self, enc: &mut wgpu::CommandEncoder, src: &wgpu::Texture, dst: &wgpu::Texture) { self.0.borrow_mut().run(enc, src, dst) }
 }
 
+/// The scrub cache's budget in the extension (canon row 615, point 6; QCView's own is 512 MB).
+const SCRUB_BYTES: usize = 128 << 20;
+/// The transport bar's strings (their translations exist there); the play key named is K - Space is the panel's.
+fn tip(s: &str) -> String { min_i18n::trc_hint("TransportBar", s) }
+
+/// A video (an MXF) in the preview: QCView's player and the bar's transport parts (canon row 615).
+struct Video {
+    t: Transport, rew: ActionButton, play: ActionButton, ff: ActionButton, mute: ActionButton, big: ActionButton,
+    scrub: Scrubber, tips: Tooltips, fmt: TimecodeFormatter, start: i32, tc: String, tc_rect: Rect,
+    /// the panel plays on opening, a small Finder preview does not: decided at the first picture on screen, by the view's size
+    auto: bool,
+    /// a press on the picture itself (not on a control): its release there toggles play
+    press: bool,
+}
+impl Video {
+    fn open(path: &str, uploader: min_present::engine::Uploader, muted: bool) -> Result<Video, String> {
+        let hw = HwDevice::platform(None);
+        let opts = TransportOptions { hw: hw.clone(), scrub: Some(ScrubOptions { hw, budget_bytes: SCRUB_BYTES, ..Default::default() }), loop_enabled: true, uploader: Some(uploader), ..Default::default() };
+        let mut t = Transport::open(&Source::from_path(path, None), opts).map_err(|e| e.to_string())?;
+        if let Ok(a) = AudioPlayer::new() { t.set_audio(Box::new(a)); }
+        let now = Instant::now(); if muted && !Playback::is_muted(&t) { Playback::apply(&mut t, Action::ToggleMute, now); }
+        let i = Playback::timecode_info(&t); let fmt = TimecodeFormatter::new(i.frame_rate.0, i.frame_rate.1, i.drop_frame);
+        let start = i.source_timecode.as_deref().filter(|o| !o.is_empty()).map(|tc| fmt.parse(tc).max(0)).unwrap_or(0);
+        let mut scrub = Scrubber::new(); scrub.compact = true;
+        Ok(Video { t, rew: ActionButton::new("rewind", &tip("Rewind (hold; J)")).size_s().hold(), play: ActionButton::new("play", &tip("Play (K)")).size_s(), ff: ActionButton::new("fast-forward", &tip("Fast-forward (hold; L)")).size_s().hold(),
+            mute: ActionButton::new("speaker-high", &tip("Mute (M)")).size_s(), big: ActionButton::new("play", &tip("Play (K)")), scrub, tips: Tooltips::default(), fmt, start, tc: String::new(), tc_rect: Rect::ZERO, auto: true, press: false })
+    }
+    fn state(&self) -> ScrubState { let p: &dyn Playback = &self.t; ScrubState { frames: p.frame_count(), fps: p.rate().as_f64(), current: p.current_frame(), in_point: p.in_point(), out_point: p.out_point(), playing: p.is_playing(), scrubbing: p.is_scrubbing(), cached: None } }
+    fn sync(&mut self, now: Instant) {
+        let (playing, has, muted, cur) = { let p: &dyn Playback = &self.t; (p.is_playing(), p.has_audio(), p.is_muted(), p.current_frame()) };
+        for b in [&mut self.play, &mut self.big] { b.icon = if playing { "pause" } else { "play" }; b.tooltip = tip(if playing { "Pause (K)" } else { "Play (K)" }); }
+        if self.mute.enabled != has { self.mute.enabled = has; if !has { self.mute.reset(now); } }
+        self.mute.icon = if muted { "speaker-x" } else { "speaker-high" }; self.mute.tooltip = tip(if muted { "Unmute (M)" } else { "Mute (M)" });
+        self.tc = if self.fmt.is_valid() { self.fmt.format(self.start + cur) } else { "—".into() };
+    }
+}
+
 pub struct Preview {
+    video: Option<Video>,
     presenter: Presenter, layer: UiLayer, fonts: Fonts, scale: f64, size: (u32, u32),
     path: String, state: Option<PathBuf>, dims: (u32, u32), facts: String, error: Option<String>,
     layers: Picker, colors: Picker, presets: Vec<Preset>,
@@ -38,6 +77,8 @@ pub struct Preview {
     /// the decode in flight (its number; a later pick outdates it)
     job: u64, rx: mpsc::Receiver<(u64, Result<Frame, String>)>, tx: mpsc::Sender<(u64, Result<Frame, String>)>,
     inside: bool, moved: Instant, pointer: (f64, f64), bar: Ramp, bar_rect: Rect, dirty: bool,
+    /// the mute carried in from the last file (kept as it was by a still)
+    was_muted: bool, presented: bool,
 }
 
 fn frame(path: &str, layer: &str) -> Result<Frame, String> {
@@ -52,19 +93,21 @@ fn frame(path: &str, layer: &str) -> Result<Frame, String> {
 fn folder(path: &str) -> String { std::path::Path::new(path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default() }
 
 /// The picks carried from the last file (row 609): (layer, colour preset) when that file was in this folder.
-fn carried(state: Option<&PathBuf>, path: &str) -> (String, String) {
+fn carried(state: Option<&PathBuf>, path: &str) -> (String, String, bool) {
     let Some(v) = state.and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) else { return Default::default() };
     if v["folder"].as_str() != Some(&folder(path)) { return Default::default() }
-    (v["layer"].as_str().unwrap_or_default().to_string(), v["color"].as_str().unwrap_or_default().to_string())
+    (v["layer"].as_str().unwrap_or_default().to_string(), v["color"].as_str().unwrap_or_default().to_string(), v["muted"].as_bool().unwrap_or(false))
 }
 
 impl Preview {
     fn keep(&self) {
         let Some(p) = &self.state else { return };
         let color = if self.colors.selected == 0 { "" } else { self.colors.value() };
-        let _ = std::fs::write(p, serde_json::json!({ "folder": folder(&self.path), "layer": self.layers.value(), "color": color }).to_string());
+        let muted = self.video.as_ref().map(|v| Playback::is_muted(&v.t)).unwrap_or(self.was_muted);
+        let _ = std::fs::write(p, serde_json::json!({ "folder": folder(&self.path), "layer": self.layers.value(), "color": color, "muted": muted }).to_string());
     }
     fn decode(&mut self) {
+        if self.video.is_some() { return }
         self.job += 1; let (job, tx, path, layer) = (self.job, self.tx.clone(), self.path.clone(), self.layers.value().to_string());
         let _ = std::thread::Builder::new().name("ql-decode".into()).spawn(move || { let _ = tx.send((job, frame(&path, &layer))); });
     }
@@ -90,11 +133,16 @@ impl Preview {
             match r { Ok(f) => match self.presenter.engine.show(&f) { Ok(()) => self.error = None, Err(e) => self.error = Some(e.to_string()) }, Err(e) => { self.presenter.engine.clear_picture(); self.error = Some(e) } }
             self.dirty = true;
         }
+        if let Some(v) = self.video.as_mut() {
+            let now = Instant::now();
+            match v.t.tick(now) { Some(d) => { if let Err(e) = self.presenter.engine.show(&d.frame) { self.error = Some(e.to_string()); } self.dirty = true; } None => v.t.idle_refresh() }
+            if v.t.is_playing() || Playback::is_scrubbing(&v.t) || v.tips.tick(now) { self.dirty = true; }
+        }
         if let Some(Ok(p)) = self.pass_rx.as_ref().map(|rx| rx.try_recv()) { self.pass = Some(Rc::new(RefCell::new(p))); self.pass_rx = None; self.color(); }
         self.pass_rx.is_some()
     }
     fn bar_wanted(&self, now: Instant) -> bool {
-        self.layers.is_open() || self.colors.is_open() || (self.inside && (now.duration_since(self.moved) < REST || self.bar_rect.contains(kurbo::Point::new(self.pointer.0, self.pointer.1))))
+        self.layers.is_open() || self.colors.is_open() || self.video.as_ref().is_some_and(|v| v.scrub.is_pressed() || v.rew.is_pressed() || v.ff.is_pressed()) || (self.inside && (now.duration_since(self.moved) < REST || self.bar_rect.contains(kurbo::Point::new(self.pointer.0, self.pointer.1))))
     }
     fn draw(&mut self, now: Instant) {
         let k = self.scale; let (w, h) = (self.size.0 as f64, self.size.1 as f64);
@@ -113,24 +161,55 @@ impl Preview {
             let m = 12.0 * k; let bar = Rect::new(m, h - m - 44.0 * k, w - m, h - m); self.bar_rect = bar;
             let mut b = vello::Scene::new();
             paint::rounded(&mut b, bar, 10.0 * k, t::BACKGROUND_LAYER_1_COLOR.with_alpha(0.9));
-            let mut x = bar.x0 + 10.0 * k; let cy = bar.center().y;
-            let chip = |p: &mut Picker, fonts: &mut Fonts, b: &mut vello::Scene, x: &mut f64, max: f64| {
-                let (pw, ph) = p.measure(fonts, k); let pw = pw.clamp(96.0 * k, max);
-                p.rect = Rect::new(*x, cy - ph / 2.0, *x + pw, cy + ph / 2.0); p.paint(b, fonts, k, now); *x += pw + 8.0 * k;
-            };
-            if self.layers.options.len() > 1 { chip(&mut self.layers, &mut self.fonts, &mut b, &mut x, 260.0 * k); } else { self.layers.rect = Rect::ZERO; }
-            chip(&mut self.colors, &mut self.fonts, &mut b, &mut x, 260.0 * k);
-            let l = self.fonts.layout_fit(&self.facts, Family::Sans, t::BODY_SIZE_M * k as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::PICKER_CONTENT_COLOR), (bar.x1 - x - 14.0 * k).max(0.0));
-            if bar.x1 - x > 120.0 * k { draw_layout(&mut b, &l, Affine::translate((bar.x1 - 14.0 * k - l.width() as f64, cy - l.height() as f64 / 2.0))); }
+            let mut x = bar.x0 + 10.0 * k; let cy = bar.center().y; let mut right = bar.x1 - 12.0 * k;
+            let chip = |p: &mut Picker, fonts: &mut Fonts, x0: f64, max: f64| -> f64 { let (pw, ph) = p.measure(fonts, k); let pw = pw.clamp(96.0 * k, max); p.rect = Rect::new(x0, cy - ph / 2.0, x0 + pw, cy + ph / 2.0); pw };
+            if let Some(v) = self.video.as_mut() {
+                // rewind, play, fast-forward | the playbar | timecode, mute, colour, the facts (row 615)
+                v.sync(now); let st = v.state();
+                let (bw, bh) = v.play.measure(&mut self.fonts, k); let tight = t::SPACING_50 as f64 * k; let gap = 10.0 * k;
+                for bt in [&mut v.rew, &mut v.play, &mut v.ff] { bt.rect = Rect::new(x, cy - bh / 2.0, x + bw, cy + bh / 2.0); bt.paint(&mut b, &mut self.fonts, k, now); x += bw + tight; }
+                x += gap - tight;
+                let facts = self.fonts.layout(&self.facts, Family::Sans, t::BODY_SIZE_M * k as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::PICKER_CONTENT_COLOR));
+                if bar.width() > 900.0 * k { right -= facts.width() as f64; draw_layout(&mut b, &facts, Affine::translate((right, cy - facts.height() as f64 / 2.0))); right -= gap; }
+                let cw = chip(&mut self.colors, &mut self.fonts, 0.0, 180.0 * k); right -= cw; let ph = self.colors.rect.height(); self.colors.rect = Rect::new(right, cy - ph / 2.0, right + cw, cy + ph / 2.0); self.colors.paint(&mut b, &mut self.fonts, k, now); right -= gap;
+                right -= bw; v.mute.rect = Rect::new(right, cy - bh / 2.0, right + bw, cy + bh / 2.0); v.mute.paint(&mut b, &mut self.fonts, k, now); right -= gap;
+                let tc = self.fonts.layout(&v.tc, Family::Mono, t::TIMECODE_WELL_FONT_SIZE * k as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT));
+                right -= tc.width() as f64; v.tc_rect = Rect::new(right, bar.y0, right + tc.width() as f64, bar.y1); draw_layout(&mut b, &tc, Affine::translate((right, cy - tc.height() as f64 / 2.0))); right -= gap;
+                let sh = (t::SCRUBBER_HEIGHT as f64 * k).min(bar.height());
+                v.scrub.layout(Rect::new(x, cy - sh / 2.0, right.max(x + 1.0), cy + sh / 2.0), k);
+                if right - x > 40.0 * k { v.scrub.paint(&mut b, &mut self.fonts, k, &st, &[]); }
+                self.layers.rect = Rect::ZERO;
+                v.tips.paint(&mut b, &mut self.fonts, k, Rect::new(0.0, 0.0, w, h), now);
+            } else {
+                if self.layers.options.len() > 1 { let pw = chip(&mut self.layers, &mut self.fonts, x, 260.0 * k); self.layers.paint(&mut b, &mut self.fonts, k, now); x += pw + 8.0 * k; } else { self.layers.rect = Rect::ZERO; }
+                let pw = chip(&mut self.colors, &mut self.fonts, x, 260.0 * k); self.colors.paint(&mut b, &mut self.fonts, k, now); x += pw + 8.0 * k;
+                let l = self.fonts.layout_fit(&self.facts, Family::Sans, t::BODY_SIZE_M * k as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::PICKER_CONTENT_COLOR), (right - x).max(0.0));
+                if right - x > 120.0 * k { draw_layout(&mut b, &l, Affine::translate((right - l.width() as f64, cy - l.height() as f64 / 2.0))); }
+            }
             self.layers.paint_menu(&mut b, &mut self.fonts, k); self.colors.paint_menu(&mut b, &mut self.fonts, k);
             scene.push_layer(peniko::Fill::NonZero, peniko::Mix::Normal, a, Affine::IDENTITY, &Rect::new(0.0, 0.0, w, h)); scene.append(&b, None); scene.pop_layer();
-        } else { self.bar_rect = Rect::ZERO; self.layers.rect = Rect::ZERO; self.colors.rect = Rect::ZERO; }
+        } else {
+            self.bar_rect = Rect::ZERO; self.layers.rect = Rect::ZERO; self.colors.rect = Rect::ZERO;
+            if let Some(v) = self.video.as_mut() {
+                for bt in [&mut v.rew, &mut v.play, &mut v.ff, &mut v.mute] { bt.rect = Rect::ZERO; } v.scrub.layout(Rect::ZERO, k); v.big.rect = Rect::ZERO;
+                // a small Finder preview: the picture, and on hover ONE button in its middle (row 615, point 1)
+                if a > 0.01 && !room {
+                    v.sync(now); let (bw, bh) = v.big.measure(&mut self.fonts, k); let c = kurbo::Point::new(w / 2.0, h / 2.0);
+                    v.big.rect = Rect::new(c.x - bw / 2.0, c.y - bh / 2.0, c.x + bw / 2.0, c.y + bh / 2.0);
+                    let mut b = vello::Scene::new(); paint::rounded(&mut b, v.big.rect.inflate(6.0 * k, 6.0 * k), 10.0 * k, t::BACKGROUND_LAYER_1_COLOR.with_alpha(0.9)); v.big.paint(&mut b, &mut self.fonts, k, now);
+                    scene.push_layer(peniko::Fill::NonZero, peniko::Mix::Normal, a, Affine::IDENTITY, &Rect::new(0.0, 0.0, w, h)); scene.append(&b, None); scene.pop_layer();
+                }
+            }
+        }
         let dst = self.layer.scene_mut(); dst.reset(); dst.append(&scene, None);
         self.layer.render(&self.presenter.engine.device, &self.presenter.engine.queue);
         // Not presented (the panel has not put the view on screen yet - the surface says "occluded" - or a drawable was not
         // to be had): the picture is still owed, and the next tick tries again. Clearing the flag here left the first
         // file black until the pointer moved (the owner's walk, 2026-11-26).
-        self.dirty = !self.presenter.draw(|| {});
+        let shown = self.presenter.draw(|| {}); self.dirty = !shown;
+        if shown && !self.presented { self.presented = true;
+            // the first picture on screen: the space-bar panel plays, a small Finder preview stays a silent still (row 615, points 1-2)
+            if let Some(v) = self.video.as_mut() { if v.auto { v.auto = false; if room { v.t.play(); self.dirty = true; } } } }
     }
 }
 
@@ -152,17 +231,26 @@ pub unsafe extern "C" fn qlp_open(ca_layer: *mut c_void, ns_view: *mut c_void, w
     presenter.engine.set_ui_scale(scale as f32);
     let Ok(layer) = UiLayer::new(&presenter.engine.device, w, h) else { return std::ptr::null_mut() };
     presenter.engine.set_overlay(Some(layer.view()));
-    let names = min_image::exr::layers(&path).unwrap_or_else(|_| vec!["default".into()]);
-    let (was_layer, was_color) = carried(state.as_ref(), &path);
+    let is_exr = std::path::Path::new(&path).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("exr"));
+    let (was_layer, was_color, was_muted) = carried(state.as_ref(), &path);
+    let mut error = None;
+    let video = if is_exr { None } else { match Video::open(&path, presenter.engine.uploader(), was_muted) { Ok(v) => Some(v), Err(e) => { error = Some(e); None } } };
+    let names = if is_exr { min_image::exr::layers(&path).unwrap_or_else(|_| vec!["default".into()]) } else { vec!["default".into()] };
     let presets: Vec<Preset> = builtins().into_iter().filter(|p| matches!(p.stored.chain, ClipChain::MinColor(_))).collect();
     let mut color_names = vec![trc("ColorPanel", "Color Off").to_string()]; color_names.extend(presets.iter().map(|p| p.name.clone()));
     let layer_at = names.iter().position(|n| *n == was_layer).unwrap_or(0);
     let color_at = presets.iter().position(|p| p.name == was_color).map(|i| i + 1).unwrap_or(0);
-    let dims = min_image::dimensions(&path, if names[layer_at] == "default" { "" } else { &names[layer_at] }).unwrap_or((1920, 1080));
-    let kind = match min_image::exr::sample_kind(&path) { Some(0) => trc(CTX, "32-bit integer"), Some(1) => trc(CTX, "16-bit float"), Some(2) => trc(CTX, "32-bit float"), _ => "" };
-    let facts = [format!("{} × {}", dims.0, dims.1), kind.to_string(), min_image::exr::compression(&path).unwrap_or_default().to_string()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("  ·  ");
+    let dot = |parts: Vec<String>| parts.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("  ·  ");
+    let (dims, facts) = if let Some(v) = &video {
+        let i = v.t.info(); let fps = i.frame_rate.0 as f64 / i.frame_rate.1.max(1) as f64;
+        ((i.width.max(1), i.height.max(1)), dot(vec![format!("{} × {}", i.width, i.height), i.codec_short.clone(), format!("{} fps", (fps * 1000.0).round() / 1000.0)]))
+    } else {
+        let dims = min_image::dimensions(&path, if names[layer_at] == "default" { "" } else { &names[layer_at] }).unwrap_or((1920, 1080));
+        let kind = match min_image::exr::sample_kind(&path) { Some(0) => trc(CTX, "32-bit integer"), Some(1) => trc(CTX, "16-bit float"), Some(2) => trc(CTX, "32-bit float"), _ => "" };
+        (dims, dot(vec![format!("{} × {}", dims.0, dims.1), kind.to_string(), min_image::exr::compression(&path).unwrap_or_default().to_string()]))
+    };
     let (tx, rx) = mpsc::channel(); let now = Instant::now();
-    let mut p = Preview { presenter, layer, fonts: Fonts::new(), scale, size: (w, h), path, state, dims, facts, error: None,
+    let mut p = Preview { video, was_muted, presented: false, presenter, layer, fonts: Fonts::new(), scale, size: (w, h), path, state, dims, facts, error,
         layers: Picker::new(names, layer_at), colors: Picker::new(color_names, color_at), presets, pass_rx: None, pass: None, bound: false,
         job: 0, rx, tx, inside: false, moved: now - REST, pointer: (-1.0, -1.0), bar: Ramp::new(0.0, 160), bar_rect: Rect::ZERO, dirty: true };
     p.decode(); p.color();
@@ -185,6 +273,23 @@ pub unsafe extern "C" fn qlp_pointer(p: *mut Preview, x: f64, y: f64, kind: i32)
     let e = match kind { 0 => Event::Move { x, y }, 1 => Event::Down { x, y, button: Button::Primary }, 2 => Event::Up { x, y, button: Button::Primary }, _ => Event::Leave };
     s.inside = kind != 3; if kind != 3 { s.pointer = (x, y); s.moved = now; }
     let bounds = Rect::new(0.0, 0.0, s.size.0 as f64, s.size.1 as f64);
+    let menu_open = s.layers.is_open() || s.colors.is_open(); let mut keep = false;
+    if let (Some(v), false) = (s.video.as_mut(), menu_open) {
+        let st = v.state(); let mut on_control = false;
+        for (bt, dir) in [(&mut v.rew, -1), (&mut v.ff, 1)] { match bt.event(&e, now) { Response::PressBegan => { Playback::apply(&mut v.t, Action::ShuttleBegin(dir), now); } Response::PressEnded => { Playback::apply(&mut v.t, Action::ShuttleEnd, now); } _ => {} } on_control |= bt.is_pressed(); }
+        for bt in [&mut v.play, &mut v.big] { if bt.event(&e, now) == Response::Clicked { v.t.toggle_playback(); } }
+        if v.mute.event(&e, now) == Response::Clicked { Playback::apply(&mut v.t, Action::ToggleMute, now); keep = true; }
+        let (cmds, _) = v.scrub.event(&e, now, &st, s.scale);
+        for c in cmds { match c { ScrubCmd::Begin => Playback::begin_scrub(&mut v.t), ScrubCmd::To(f) => Playback::scrub_to_frame(&mut v.t, f), ScrubCmd::End => Playback::end_scrub(&mut v.t), _ => {} } }
+        let over = |r: Rect| r.contains(kurbo::Point::new(x, y));
+        on_control |= kind != 3 && (over(v.rew.rect) || over(v.play.rect) || over(v.ff.rect) || over(v.mute.rect) || over(v.big.rect) || over(v.scrub.rect) || over(s.colors.rect) || over(s.bar_rect));
+        // a press and release on the picture itself: play / pause, as the spike the owner walked did
+        match kind { 1 => v.press = !on_control, 2 => { if v.press && !on_control { v.t.toggle_playback(); } v.press = false; } 3 => v.press = false, _ => {} }
+        if kind == 1 { v.tips.pressed(now); }
+        let tip_at: Option<(u64, Rect, String)> = [(1u64, &v.rew), (2, &v.play), (3, &v.ff), (4, &v.mute), (5, &v.big)].into_iter().find(|(_, b)| b.hovered() && b.rect.width() > 0.0).map(|(i, b)| (i, b.rect, b.tooltip.clone()));
+        v.tips.hover(tip_at.as_ref().map(|(i, r, t)| (*i, *r, t.as_str())), now);
+    }
+    if keep { s.keep(); }
     // an open menu takes every press (min-ui's rule); the other picker does not see it
     let first_colors = s.colors.is_open();
     let (layer, color) = if first_colors { let c = s.colors.event(&e, now, &mut s.fonts, bounds, s.scale); (if c.2 { (None, false, false) } else { s.layers.event(&e, now, &mut s.fonts, bounds, s.scale) }, c) }
@@ -192,6 +297,18 @@ pub unsafe extern "C" fn qlp_pointer(p: *mut Preview, x: f64, y: f64, kind: i32)
     if layer.0.is_some() { s.decode(); s.keep(); }
     if color.0.is_some() { s.color(); s.keep(); }
     s.dirty = true;
+}
+
+/// A key that reached the view (it does after a click on the picture; Space, the arrows and Escape stay the panel's).
+/// `ch`: the key's character without modifiers; `special`: 1 = Home, 2 = End, 0 = none. QCView's own map (row 615,
+/// point 4): K / W / S play, J / A and L / D shuttle while held, Q / E a frame, M mute, Home / End.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qlp_key(p: *mut Preview, ch: u32, special: u32, pressed: bool, repeat: bool) { let s = unsafe { &mut *p }; let now = Instant::now();
+    let Some(v) = s.video.as_mut() else { return };
+    let key = match special { 1 => qcv_player::Key::Home, 2 => qcv_player::Key::End, _ => match char::from_u32(ch) { Some(c) if c.is_ascii_alphabetic() => qcv_player::Key::Char(c), _ => return } };
+    let Some(a) = qcv_player::map_key(key, qcv_player::Mods::default(), pressed, repeat) else { return };
+    if !matches!(a, Action::ShuttleBegin(_) | Action::ShuttleEnd | Action::Step(_) | Action::TogglePlayback | Action::SeekToStart | Action::SeekToEnd | Action::ToggleMute) { return }
+    Playback::apply(&mut v.t, a, now); if a == Action::ToggleMute { s.keep(); } s.dirty = true;
 }
 
 /// The wheel, pixels (positive = further down a list): an open menu scrolls.
@@ -203,8 +320,10 @@ pub unsafe extern "C" fn qlp_scroll(p: *mut Preview, dy: f64) { let s = unsafe {
 pub unsafe extern "C" fn qlp_tick(p: *mut Preview) { let s = unsafe { &mut *p }; let now = Instant::now();
     s.poll();
     let want = s.bar_wanted(now);
-    if s.dirty || s.bar.animating(now) || (want as u8 as f32 - s.bar.target()).abs() > 0.5 || s.layers.animating(now) || s.colors.animating(now) { s.draw(now); }
+    if s.dirty || s.bar.animating(now) || (want as u8 as f32 - s.bar.target()).abs() > 0.5 || s.layers.animating(now) || s.colors.animating(now) || s.video.as_ref().is_some_and(|v| [&v.rew, &v.play, &v.ff, &v.mute, &v.big].iter().any(|b| b.animating(now))) { s.draw(now); }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn qlp_close(p: *mut Preview) { if !p.is_null() { drop(unsafe { Box::from_raw(p) }); } }
+pub unsafe extern "C" fn qlp_close(p: *mut Preview) { if p.is_null() { return } let mut s = unsafe { Box::from_raw(p) };
+    // the player's decoders end on their own threads; they are waited for before the device goes
+    if let Some(v) = s.video.take() { v.t.retire(); qcv_player::wait_retired(Duration::from_secs(2)); } }

@@ -39,13 +39,13 @@ if not sys.argv[4]: plistlib.dump(dict(base, CFBundleExecutable="QCViewQuickLook
 def ext(name, cls, point, attrs):
     plistlib.dump(dict(base, CFBundleExecutable=name, CFBundleIdentifier=bid + "." + cls, CFBundleName=name, CFBundleDisplayName="QCView", CFBundlePackageType="XPC!",
         NSExtension={"NSExtensionPointIdentifier": point, "NSExtensionPrincipalClass": "QCV" + cls.capitalize(), "NSExtensionAttributes": attrs}), open(c / f"PlugIns/{name}.appex/Contents/Info.plist", "wb"))
-# canon row 606: MXF and EXR only. The preview takes EXR until the MXF player is built; the thumbnails take both.
-ext("QCViewPreview", "preview", "com.apple.quicklook.preview", {"QLSupportedContentTypes": ["com.ilm.openexr-image"], "QLIsDataBasedPreview": False, "QLSupportsSearchableItems": False})
+# canon row 606: MXF and EXR only, for the preview and for the thumbnails.
+ext("QCViewPreview", "preview", "com.apple.quicklook.preview", {"QLSupportedContentTypes": ["com.ilm.openexr-image", "org.smpte.mxf"], "QLIsDataBasedPreview": False, "QLSupportsSearchableItems": False})
 ext("QCViewThumbnail", "thumbnail", "com.apple.quicklook.thumbnail", {"QLSupportedContentTypes": ["com.ilm.openexr-image", "org.smpte.mxf"], "QLThumbnailMinimumDimension": 0})
 PY
 # one library for both; what an extension does not call is stripped, and so are the libraries it then does not need
 LIBS=("$ROOT/target/release/libqcv_quicklook.a" "$C"/Frameworks/libOpenEXRCore-*.dylib "$C"/Frameworks/lib{avutil,avformat,avfilter,swscale,swresample,avcodec}.*.dylib
-  -lz -lc++ -liconv -framework ImageIO -framework AudioToolbox -framework CoreData -framework CoreText -framework CoreImage -framework CloudKit -framework QuartzCore -framework CoreVideo -framework Metal
+  -lz -lc++ -liconv -framework ImageIO -framework AudioToolbox -framework CoreAudio -framework AudioUnit -framework CoreData -framework CoreText -framework CoreImage -framework CloudKit -framework QuartzCore -framework CoreVideo -framework Metal
   -Xlinker -dead_strip -Xlinker -dead_strip_dylibs -Xlinker -rpath -Xlinker @loader_path/../../../../Frameworks -Xlinker -e -Xlinker _NSExtensionMain)
 build_ext() { xcrun swiftc -O -target arm64-apple-macos13.0 -parse-as-library -application-extension -module-name "$1" "$SRC/swift/$2" "${LIBS[@]}" -o "$C/PlugIns/$1.appex/Contents/MacOS/$1"; strip -S -x "$C/PlugIns/$1.appex/Contents/MacOS/$1" 2> /dev/null; }
 build_ext QCViewPreview Preview.swift; build_ext QCViewThumbnail Thumbnail.swift

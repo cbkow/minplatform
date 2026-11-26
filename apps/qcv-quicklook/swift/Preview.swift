@@ -10,6 +10,7 @@ import QuartzCore
 @_silgen_name("qlp_resize") func qlp_resize(_ p: OpaquePointer, _ w: UInt32, _ h: UInt32, _ scale: Double)
 @_silgen_name("qlp_pointer") func qlp_pointer(_ p: OpaquePointer, _ x: Double, _ y: Double, _ kind: Int32)
 @_silgen_name("qlp_scroll") func qlp_scroll(_ p: OpaquePointer, _ dy: Double)
+@_silgen_name("qlp_key") func qlp_key(_ p: OpaquePointer, _ ch: UInt32, _ special: UInt32, _ pressed: Bool, _ isRepeat: Bool)
 @_silgen_name("qlp_tick") func qlp_tick(_ p: OpaquePointer)
 @_silgen_name("qlp_close") func qlp_close(_ p: OpaquePointer?)
 
@@ -17,6 +18,17 @@ final class QCVPreviewView: NSView {
     var handle: OpaquePointer?; var timer: Timer?
     override func makeBackingLayer() -> CALayer { CAMetalLayer() }
     override var isFlipped: Bool { true }
+    // the keys: ours once the picture has been clicked (the view is then the first responder); Space, the arrows and Escape
+    // are the panel's and are passed up untouched
+    override var acceptsFirstResponder: Bool { true }
+    func key(_ e: NSEvent, _ pressed: Bool) -> Bool {
+        guard let h = handle, e.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return false }
+        let special: UInt32 = e.keyCode == 115 ? 1 : e.keyCode == 119 ? 2 : 0
+        guard let c = e.charactersIgnoringModifiers?.lowercased().unicodeScalars.first, special != 0 || "kwsjaldqem".unicodeScalars.contains(c) else { return false }
+        qlp_key(h, c.value, special, pressed, e.isARepeat); return true
+    }
+    override func keyDown(with e: NSEvent) { if !key(e, true) { super.keyDown(with: e) } }
+    override func keyUp(with e: NSEvent) { if !key(e, false) { super.keyUp(with: e) } }
     var scale: Double { Double(window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2) }
     func fit() { guard let h = handle else { return }; layer?.contentsScale = CGFloat(scale); qlp_resize(h, UInt32(max(1, Double(bounds.width) * scale)), UInt32(max(1, Double(bounds.height) * scale)), scale) }
     override func layout() { super.layout(); fit() }
@@ -28,7 +40,7 @@ final class QCVPreviewView: NSView {
     override func mouseEntered(with e: NSEvent) { send(e, 0) }
     override func mouseDragged(with e: NSEvent) { send(e, 0) }
     override func mouseExited(with e: NSEvent) { send(e, 3) }
-    override func mouseDown(with e: NSEvent) { send(e, 1) }
+    override func mouseDown(with e: NSEvent) { window?.makeFirstResponder(self); send(e, 1) }
     override func mouseUp(with e: NSEvent) { send(e, 2) }
     override func scrollWheel(with e: NSEvent) { if let h = handle { qlp_scroll(h, -Double(e.scrollingDeltaY) * (e.hasPreciseScrollingDeltas ? 1 : 10) * scale) } }
     deinit { timer?.invalidate(); qlp_close(handle) }
