@@ -10,10 +10,13 @@ use vello::Scene;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Placement { Above, Below }
 
-pub struct Popover { pub title: String, pub rect: Rect, pub content: Rect, pub open: bool, pub placement: Placement }
+pub struct Popover { pub title: String, pub rect: Rect, pub content: Rect, pub open: bool, pub placement: Placement,
+    /// On glass (the Quick Look preview, canon row 616): the panel floats over a picture beside a translucent bar - the
+    /// first layer's grey, nearly opaque so a list stays readable over a bright picture, and a faint white edge.
+    pub glass: bool }
 
 impl Popover {
-    pub fn new(title: &str) -> Popover { Popover { title: title.to_string(), rect: Rect::ZERO, content: Rect::ZERO, open: false, placement: Placement::Above } }
+    pub fn new(title: &str) -> Popover { Popover { title: title.to_string(), rect: Rect::ZERO, content: Rect::ZERO, open: false, placement: Placement::Above, glass: false } }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.open && self.rect.contains(kurbo::Point::new(x, y)) }
     fn title_height(&self, fonts: &mut Fonts, scale: f64) -> f64 {
         if self.title.is_empty() { 0.0 } else { fonts.detail(&self.title, t::DETAIL_SIZE_S * scale as f32, peniko::Color::WHITE).height() as f64 + t::SPACING_75 as f64 * scale }
@@ -45,9 +48,11 @@ impl Popover {
             // CSS blur radius ≈ 2 σ
             scene.draw_blurred_rounded_rect(Affine::translate((sh.x as f64 * scale, sh.y as f64 * scale)), self.rect.inflate(sh.spread as f64 * scale, sh.spread as f64 * scale), paint::color(sh.color), r, (sh.blur as f64 * scale / 2.0).max(0.1));
         }
-        paint::rounded(scene, self.rect, r, t::POPOVER_BORDER_COLOR);
+        let (edge, fill) = if self.glass { (min_theme::Color::rgba(1.0, 1.0, 1.0, 0.12), t::BACKGROUND_LAYER_1_COLOR.with_alpha(0.94)) } else { (t::POPOVER_BORDER_COLOR, t::POPOVER_BACKGROUND_COLOR) };
         let bw = t::POPOVER_BORDER_WIDTH as f64 * scale;
-        scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, paint::color(t::POPOVER_BACKGROUND_COLOR), None, &RoundedRect::from_rect(self.rect.inset(-bw), r - bw));
+        // the edge as a ring, the fill inside it: a translucent fill over a full plate of the edge's colour would take its tint
+        scene.stroke(&kurbo::Stroke::new(bw), Affine::IDENTITY, paint::color(edge), None, &RoundedRect::from_rect(self.rect.inset(-bw / 2.0), r - bw / 2.0));
+        scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, paint::color(fill), None, &RoundedRect::from_rect(self.rect.inset(-bw), r - bw));
         if !self.title.is_empty() {
             let l = fonts.detail(&self.title, t::DETAIL_SIZE_S * scale as f32, paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
             let pad = t::POPOVER_PADDING as f64 * scale;

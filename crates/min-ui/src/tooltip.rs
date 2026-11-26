@@ -11,9 +11,12 @@ use vello::Scene;
 struct Hover { key: u64, anchor: Rect, text: String, since: Instant }
 
 #[derive(Default)]
-pub struct Tooltips { hover: Option<Hover>, shown: Option<Instant>, last_visible: bool }
+pub struct Tooltips { hover: Option<Hover>, shown: Option<Instant>, last_visible: bool,
+    /// On glass (as `Popover::glass`): the tip in the glass panel's fill instead of the token's grey.
+    pub glass: bool }
 
 impl Tooltips {
+    pub fn glass(mut self) -> Tooltips { self.glass = true; self }
     /// Report what the pointer rests on each frame (`None` = nothing with a tooltip). Returns true when visibility changed.
     pub fn hover(&mut self, over: Option<(u64, Rect, &str)>, now: Instant) -> bool {
         match (over, &mut self.hover) {
@@ -54,13 +57,14 @@ impl Tooltips {
         let y0 = if above { h.anchor.y0 - off - tip_h - hh } else { h.anchor.y1 + off + tip_h };
         let x0 = (cx - w / 2.0).clamp(bounds.x0 + pad_x, (bounds.x1 - w - pad_x).max(bounds.x0));
         let body = Rect::new(x0, y0, x0 + w, y0 + hh);
-        paint::rounded(scene, body, t::TOOLTIP_CORNER_RADIUS as f64 * scale, t::TOOLTIP_BACKGROUND_COLOR);
+        let fill = if self.glass { t::BACKGROUND_LAYER_1_COLOR.with_alpha(0.94) } else { t::TOOLTIP_BACKGROUND_COLOR };
+        paint::rounded(scene, body, t::TOOLTIP_CORNER_RADIUS as f64 * scale, fill);
         let mut tip = BezPath::new();
         let tx = cx.clamp(body.x0 + tip_w, body.x1 - tip_w);
         if above { tip.move_to((tx - tip_w / 2.0, body.y1)); tip.line_to((tx + tip_w / 2.0, body.y1)); tip.line_to((tx, body.y1 + tip_h)); }
         else { tip.move_to((tx - tip_w / 2.0, body.y0)); tip.line_to((tx + tip_w / 2.0, body.y0)); tip.line_to((tx, body.y0 - tip_h)); }
         tip.close_path();
-        scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, paint::color(t::TOOLTIP_BACKGROUND_COLOR), None, &tip);
+        scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, paint::color(fill), None, &tip);
         crate::fonts::draw_layout(scene, &layout, Affine::translate((body.x0 + pad_x, body.y0 + pad_y)));
     }
 }

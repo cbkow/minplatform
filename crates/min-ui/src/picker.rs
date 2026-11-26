@@ -16,10 +16,14 @@ pub struct Picker {
     /// the resting background (None = the token's): a picker on a layer-2 card sits one step darker, recessed (the token is the
     /// card's own grey there — the walk 2026-11-09)
     pub bg: Option<min_theme::Color>,
+    /// On glass (as `ActionButton::glass`): no fill at rest, a faint white while hovered, more while open; the menu a
+    /// glass [`Popover`] with white washes for its rows.
+    pub glass: bool,
 }
 
 impl Picker {
-    pub fn new(options: Vec<String>, selected: usize) -> Picker { Picker { selected: selected.min(options.len().saturating_sub(1)), options, enabled: true, rect: Rect::ZERO, menu: Popover::new(""), hovered: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), hover_item: None, pressed_item: None, scale: 1.0, scroll: 0.0, bg: None } }
+    pub fn new(options: Vec<String>, selected: usize) -> Picker { Picker { selected: selected.min(options.len().saturating_sub(1)), options, enabled: true, rect: Rect::ZERO, menu: Popover::new(""), hovered: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), hover_item: None, pressed_item: None, scale: 1.0, scroll: 0.0, bg: None, glass: false } }
+    pub fn glass(mut self) -> Picker { self.glass = true; self.menu.glass = true; self }
     pub fn hovered(&self) -> bool { self.hovered }
     pub fn is_open(&self) -> bool { self.menu.open }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
@@ -82,8 +86,8 @@ impl Picker {
         let hv = self.hover.value(now);
         // a resting fill a step lighter than the rail's tiles (the walk 2026-11-08: dropdowns read as controls), the hover grey over it
         let base = self.bg.unwrap_or(t::PICKER_BACKGROUND_COLOR);
-        let bg = if !self.enabled { base.with_alpha(0.5) } else if self.menu.open { t::DOWN_BACKGROUND_COLOR } else { mix(base, t::HOVER_BACKGROUND_COLOR, hv) };
-        paint::rounded(scene, self.rect, t::PICKER_CORNER_RADIUS as f64 * scale, bg);
+        let bg = if self.glass { min_theme::Color::rgba(1.0, 1.0, 1.0, if !self.enabled { 0.0 } else if self.menu.open { 0.24 } else { 0.14 * hv }) } else if !self.enabled { base.with_alpha(0.5) } else if self.menu.open { t::DOWN_BACKGROUND_COLOR } else { mix(base, t::HOVER_BACKGROUND_COLOR, hv) };
+        if bg.a > 0.0 { paint::rounded(scene, self.rect, t::PICKER_CORNER_RADIUS as f64 * scale, bg); }
         let c = if !self.enabled { t::DISABLED_CONTENT_COLOR } else if self.hovered || self.menu.open { t::PICKER_CONTENT_COLOR_HOVER } else { t::PICKER_CONTENT_COLOR };
         let edge = t::PICKER_EDGE_TO_TEXT as f64 * scale;
         let sz = t::PICKER_CHEVRON_SIZE * scale as f32;
@@ -95,13 +99,14 @@ impl Picker {
     pub fn paint_menu(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64) {
         if !self.menu.open { return }
         self.menu.paint(scene, fonts, scale);
+        let (down, over) = if self.glass { (min_theme::Color::rgba(1.0, 1.0, 1.0, 0.22), min_theme::Color::rgba(1.0, 1.0, 1.0, 0.12)) } else { (t::MENU_ITEM_DOWN_COLOR, t::MENU_ITEM_HOVER_COLOR) };
         let ih = self.item_h(); let c = self.menu.content; let edge = t::MENU_ITEM_EDGE_TO_TEXT as f64 * scale;
         let clipped = self.scroll_max() > 0.0; if clipped { scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &c); }
         for (i, o) in self.options.iter().enumerate() {
             let r = Rect::new(c.x0, c.y0 + i as f64 * ih - self.scroll, c.x1, c.y0 + (i + 1) as f64 * ih - self.scroll);
             if r.y1 < c.y0 || r.y0 > c.y1 { continue }
-            if self.pressed_item == Some(i) { paint::rounded(scene, r, t::PICKER_CORNER_RADIUS as f64 * scale, t::MENU_ITEM_DOWN_COLOR); }
-            else if self.hover_item == Some(i) { paint::rounded(scene, r, t::PICKER_CORNER_RADIUS as f64 * scale, t::MENU_ITEM_HOVER_COLOR); }
+            if self.pressed_item == Some(i) { paint::rounded(scene, r, t::PICKER_CORNER_RADIUS as f64 * scale, down); }
+            else if self.hover_item == Some(i) { paint::rounded(scene, r, t::PICKER_CORNER_RADIUS as f64 * scale, over); }
             let l = fonts.layout(o, Family::Sans, t::BODY_SIZE_M * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::MENU_ITEM_CONTENT_COLOR));
             crate::fonts::draw_layout(scene, &l, Affine::translate((r.x0 + edge, r.y0 + (ih - l.height() as f64) / 2.0)));
             if i == self.selected { if let Some(g) = fonts.icon("check", t::ICON_SIZE_SMALL * scale as f32, paint::color(t::MENU_ITEM_CONTENT_COLOR)) { crate::fonts::draw_layout(scene, &g, Affine::translate((r.x1 - edge - g.width() as f64, r.y0 + (ih - g.height() as f64) / 2.0))); } }

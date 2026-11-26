@@ -61,7 +61,7 @@ impl Video {
         let start = i.source_timecode.as_deref().filter(|o| !o.is_empty()).map(|tc| fmt.parse(tc).max(0)).unwrap_or(0);
         let mut scrub = Scrubber::new(); scrub.compact = true; scrub.bare = true;
         Ok(Video { t, rew: ActionButton::new("rewind", &tip("Rewind (hold; J)")).size_s().hold().glass(), play: ActionButton::new("play", &tip("Play (K)")).size_s().glass(), ff: ActionButton::new("fast-forward", &tip("Fast-forward (hold; L)")).size_s().hold().glass(),
-            mute: ActionButton::new("speaker-high", &tip("Mute (M)")).size_s().glass(), big: ActionButton::new("play", &tip("Play (K)")).glass(), scrub, tips: Tooltips::default(), fmt, start, tc: String::new(), tc_rect: Rect::ZERO, auto: true, press: false })
+            mute: ActionButton::new("speaker-high", &tip("Mute (M)")).size_s().glass(), big: ActionButton::new("play", &tip("Play (K)")).glass(), scrub, tips: Tooltips::default().glass(), fmt, start, tc: String::new(), tc_rect: Rect::ZERO, auto: true, press: false })
     }
     fn state(&self) -> ScrubState { let p: &dyn Playback = &self.t; ScrubState { frames: p.frame_count(), fps: p.rate().as_f64(), current: p.current_frame(), in_point: p.in_point(), out_point: p.out_point(), playing: p.is_playing(), scrubbing: p.is_scrubbing(), cached: None } }
     fn sync(&mut self, now: Instant, scale: f64) {
@@ -268,7 +268,7 @@ pub unsafe extern "C" fn qlp_open(ca_layer: *mut c_void, ns_view: *mut c_void, w
     };
     let (tx, rx) = mpsc::channel(); let now = Instant::now();
     let mut p = Preview { held_since: None, phantom: false, real_down: false, swallow: None, debug: false, seen: [0; 3], last: "-", video, was_muted, presented: false, presenter, layer, fonts: Fonts::new(), scale, size: (w, h), path, state, dims, facts, error,
-        layers: Picker::new(names, layer_at), colors: Picker::new(color_names, color_at), presets, pass_rx: None, pass: None, bound: false,
+        layers: Picker::new(names, layer_at).glass(), colors: Picker::new(color_names, color_at).glass(), presets, pass_rx: None, pass: None, bound: false,
         job: 0, rx, tx, inside: false, moved: now - REST, pointer: (-1.0, -1.0), bar: Ramp::new(0.0, 160), bar_rect: Rect::ZERO, dirty: true };
     p.decode(); p.color();
     note(&format!("open: {} (video {}, sound {}), view {w}x{h} scale {scale}", p.facts, p.video.is_some(), p.video.as_ref().is_some_and(|v| v.t.audio.has_audio())));
