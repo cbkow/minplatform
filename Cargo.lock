@@ -4848,6 +4848,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "qcv-quicklook"
+version = "0.1.0"
+dependencies = [
+ "kurbo 0.13.1",
+ "min-i18n",
+ "min-image",
+ "min-present",
+ "min-theme",
+ "min-ui",
+ "peniko",
+ "qcv-color",
+ "serde_json",
+ "vello",
+ "wgpu",
+]
+
+[[package]]
 name = "qcv-ring"
 version = "0.1.0"
 dependencies = [

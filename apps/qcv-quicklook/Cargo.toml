@@ -1,0 +1,26 @@
+[package]
+name = "qcv-quicklook"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "QCView's Quick Look extension for macOS (canon rows 605-611): the Rust half - an EXR drawn by the family's presenter into the preview's view, a bar of min-ui chips (layer, colour) - behind C functions the Swift shells in swift/ call"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+min-present = { path = "../../crates/min-present" }
+min-ui = { path = "../../crates/min-ui" }
+min-theme = { path = "../../crates/min-theme" }
+min-image = { path = "../../crates/min-image" }
+min-i18n = { path = "../../crates/min-i18n" }
+qcv-color = { path = "../../crates/qcv-color", default-features = false }
+vello = { workspace = true }
+peniko = { workspace = true }
+kurbo = { workspace = true }
+wgpu = { workspace = true }
+serde_json = { workspace = true }

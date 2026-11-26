@@ -6,7 +6,12 @@
 //! → the view / the Rendering. Never the viewer aids (R10). The VIDEO emulation (canon rows 246 / 262) is baked when it is
 //! acting on the screen (the user 2026-11-10, reversing R10's "never"): the SDR range leaves as the 1/2.4 power — the screen's
 //! `srgb_eotf(pow(c, 1/2.4))` followed by this file's sRGB curve is exactly that — and anything outside it as sRGB.
-use crate::{ocio, Chain, Knee};
+#[cfg(feature = "ocio")]
+use crate::ocio;
+use crate::Chain;
+#[cfg(feature = "ocio")]
+use crate::Knee;
+#[cfg(feature = "ocio")]
 use std::sync::Arc;
 
 /// QCView's size (the QML passed 65; not a choice).
@@ -24,6 +29,7 @@ fn lattice(n: usize) -> Vec<f32> {
     v
 }
 
+#[cfg(feature = "ocio")]
 /// An OCIO chain on `n`³ points → sRGB-encoded RGB triplets, and whether the Knee was LEFT OUT (it is on, but the chain
 /// cannot be split around it — QCView exported without it and said so only in its log, spec B6; the caller tells the user).
 pub fn bake_ocio(config: &Arc<ocio::Config>, spec: &ocio::Spec, knee: Knee, n: usize, video: bool) -> Result<(Vec<f32>, bool), String> {

@@ -4653,3 +4653,23 @@ msgstr "Видалити точку (клацніть її)"
 msgctxt "NotesPanel"
 msgid "Corner or curve (click a point; drag for new handles)"
 msgstr "Кут або крива (клацніть точку; перетягніть для нових важелів)"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "QuickLook"
+msgid "16-bit float"
+msgstr "16-біт з рухомою комою"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "QuickLook"
+msgid "32-bit float"
+msgstr "32-біт з рухомою комою"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "QuickLook"
+msgid "32-bit integer"
+msgstr "32-біт ціле"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "QuickLook"
+msgid "This file cannot be shown: %1"
+msgstr "Не вдається показати цей файл: %1"

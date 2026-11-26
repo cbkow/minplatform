@@ -4645,3 +4645,23 @@ msgstr "Rimuovi un punto (clic su di esso)"
 msgctxt "NotesPanel"
 msgid "Corner or curve (click a point; drag for new handles)"
 msgstr "Angolo o curva (clic su un punto; trascina per nuove maniglie)"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "QuickLook"
+msgid "16-bit float"
+msgstr "Virgola mobile a 16 bit"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "QuickLook"
+msgid "32-bit float"
+msgstr "Virgola mobile a 32 bit"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "QuickLook"
+msgid "32-bit integer"
+msgstr "Intero a 32 bit"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "QuickLook"
+msgid "This file cannot be shown: %1"
+msgstr "Impossibile mostrare questo file: %1"

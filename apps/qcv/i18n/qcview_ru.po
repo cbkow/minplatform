@@ -4653,3 +4653,23 @@ msgstr "Удалить точку (щёлкните по ней)"
 msgctxt "NotesPanel"
 msgid "Corner or curve (click a point; drag for new handles)"
 msgstr "Угол или кривая (щёлкните по точке; перетащите для новых рычагов)"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "QuickLook"
+msgid "16-bit float"
+msgstr "16-бит с плавающей точкой"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "QuickLook"
+msgid "32-bit float"
+msgstr "32-бит с плавающей точкой"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "QuickLook"
+msgid "32-bit integer"
+msgstr "32-бит целое"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "QuickLook"
+msgid "This file cannot be shown: %1"
+msgstr "Не удаётся показать этот файл: %1"

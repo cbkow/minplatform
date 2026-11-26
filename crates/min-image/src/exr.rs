@@ -67,6 +67,10 @@ pub fn compression(path: &str) -> Option<&'static str> {
     Some(match c as u32 { 0 => "NONE", 1 => "RLE", 2 => "ZIPS", 3 => "ZIP", 4 => "PIZ", 5 => "PXR24", 6 => "B44", 7 => "B44A", 8 => "DWAA", 9 => "DWAB", _ => return None })
 }
 
+/// How the first part's first channel is stored: 0 = 32-bit unsigned integer, 1 = half float, 2 = 32-bit float (the
+/// Quick Look preview's line of facts, canon row 611). None for an unreadable header.
+pub fn sample_kind(path: &str) -> Option<u32> { let ctx = open(path).ok()?; channels(&ctx, 0).first().map(|(_, t)| *t as u32) }
+
 /// The display window's size of the part `layer` selects (QCView's layer-aware `getDimensions`) — headers only.
 pub fn dimensions(path: &str, layer: &str) -> Result<(u32, u32), Error> {
     if std::fs::metadata(path).is_err() { return Err(Error::Open(format!("{path}: missing"))) }

@@ -4653,3 +4653,23 @@ msgstr "Usuń punkt (kliknij go)"
 msgctxt "NotesPanel"
 msgid "Corner or curve (click a point; drag for new handles)"
 msgstr "Narożnik lub krzywa (kliknij punkt; przeciągnij, by utworzyć nowe uchwyty)"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "QuickLook"
+msgid "16-bit float"
+msgstr "16-bitowy zmiennoprzecinkowy"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "QuickLook"
+msgid "32-bit float"
+msgstr "32-bitowy zmiennoprzecinkowy"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "QuickLook"
+msgid "32-bit integer"
+msgstr "32-bitowy całkowity"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "QuickLook"
+msgid "This file cannot be shown: %1"
+msgstr "Nie można wyświetlić tego pliku: %1"
