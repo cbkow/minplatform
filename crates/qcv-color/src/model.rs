@@ -1,9 +1,10 @@
+//! (Moved here from `apps/qcv/src/color_model.rs` 2026-11-26, canon row 610: the Quick Look extension lists the same presets.)
 //! The colour chain as the app stores it (canon rows 205–208, ruled 2026-11-08): ONE whole chain per clip (Input, Look /
 //! Scene LUT, Knee, Rendering), a project default for clips without one, presets as starting points in the user's
 //! library. Stored in the per-clip maps `.qcvproj` already carries (`minColorClip` / `ocioClip`): QCView's own keys
 //! (`input`, `knee` for minColor; `input`, `look`, `sceneLut`, `knee` for OCIO) keep their meaning, ours are added
 //! (`agx`, `output` = minColorChain::toVariant's; `engine`, `config`, `view`, `preset`), so QCView still reads the clip side.
-use qcv_color::{Chain, Knee};
+use crate::{Chain, Knee};
 use serde_json::{json, Map, Value};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -125,7 +126,7 @@ pub struct Preset { pub name: String, pub stored: Stored, pub builtin: bool }
 /// The built-ins (row 198: every built-in is minColor): QCView's minColor seeds with the per-output triples collapsed (one
 /// surface), plus the two display-referred readings a review meets most (Rec.709 video, sRGB).
 pub fn builtins() -> Vec<Preset> {
-    use qcv_color::ids as cam;
+    use crate::ids as cam;
     let d = Chain::default();
     let mk = |name: &str, c: Chain| Preset { name: name.into(), stored: Stored { chain: ClipChain::MinColor(c), preset: name.into() }, builtin: true };
     vec![
@@ -191,7 +192,7 @@ mod tests {
             assert_eq!((c.in_gamut, c.in_transfer, c.open_drt, c.agx_on), (gamut, transfer, 0, 0), "{name}");
             assert_eq!(Stored::from_map(&p.stored.to_map()), Some(p.stored.clone()), "{name}");
             // the names the lists show for those ids are the cameras' own
-            assert!(qcv_color::input_transfers().iter().any(|(id, _)| *id == transfer) && qcv_color::input_gamuts().iter().any(|(id, _)| *id == gamut), "{name}");
+            assert!(crate::input_transfers().iter().any(|(id, _)| *id == transfer) && crate::input_gamuts().iter().any(|(id, _)| *id == gamut), "{name}");
         }
         assert_eq!(b[0].name, "Rec.709 video", "the fallback default is still the first");
     }

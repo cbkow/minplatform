@@ -277,6 +277,7 @@ impl KneeStage {
 #[cfg(feature = "ocio")]
 pub mod ocio;
 pub mod bake;
+pub mod model;
 
 #[cfg(test)]
 mod tests;

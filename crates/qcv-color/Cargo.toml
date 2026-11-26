@@ -21,6 +21,7 @@ wgpu = { workspace = true }
 bytemuck = { workspace = true }
 log = { workspace = true }
 pollster = { workspace = true }
+serde_json = { workspace = true }   # model.rs: the chain as the project stores it
 
 [build-dependencies]
 cc = "1"

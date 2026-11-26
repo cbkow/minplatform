@@ -54,7 +54,7 @@ mod clip_bar;
 mod clip_popover;
 mod i18n;
 mod color;
-mod color_model;
+use qcv_color::model as color_model;   // the colour model lives in qcv-color since row 610
 mod color_drawer;
 mod color_columns;
 mod dual_controls;
