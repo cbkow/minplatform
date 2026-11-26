@@ -2,9 +2,12 @@
 // Rust library (../src/lib.rs), which draws everything; this file passes on the size, the pointer (pixels, the top left
 // the origin) and a tick at the display's pace. No AppKit control is used.
 import AppKit
+import os
 import Quartz
 import QuartzCore
 
+/// The Rust library's line for the system's log (`note` in ../src/lib.rs).
+@_cdecl("qlp_host_log") func qlp_host_log(_ msg: UnsafePointer<CChar>) { let m = String(cString: msg); Logger(subsystem: "app.qcview.quicklook", category: "preview").notice("\(m, privacy: .public)") }
 @_silgen_name("qlp_open") func qlp_open(_ layer: UnsafeMutableRawPointer, _ view: UnsafeMutableRawPointer, _ w: UInt32, _ h: UInt32, _ scale: Double, _ path: UnsafePointer<CChar>, _ stateDir: UnsafePointer<CChar>?, _ languages: UnsafePointer<CChar>?) -> OpaquePointer?
 @_silgen_name("qlp_size") func qlp_size(_ p: OpaquePointer, _ w: UnsafeMutablePointer<UInt32>, _ h: UnsafeMutablePointer<UInt32>)
 @_silgen_name("qlp_resize") func qlp_resize(_ p: OpaquePointer, _ w: UInt32, _ h: UInt32, _ scale: Double)

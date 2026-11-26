@@ -19,6 +19,12 @@ macro_rules! catalogs { ($($code:literal),*) => { &[$(($code, include_str!(conca
 const CATALOGS: &[(&str, &str)] = catalogs!("en", "de", "es", "fr", "it", "ja", "ko", "pl", "pt_BR", "ru", "uk", "zh_CN");
 const CTX: &str = "QuickLook";
 
+unsafe extern "C" { fn qlp_host_log(msg: *const c_char); }
+/// A line in the system's log (the shell's `NSLog`): read with `/usr/bin/log show --predicate 'process == "QCViewPreview"'`
+/// - the full path, zsh has a builtin of that name. The extension's container is closed to other programs, so this
+/// is its only record outside the screen.
+fn note(s: &str) { if let Ok(c) = std::ffi::CString::new(s) { unsafe { qlp_host_log(c.as_ptr()) } } }
+
 /// The bar stays this long after the pointer last moved over the picture (row 611: "about two seconds").
 const REST: Duration = Duration::from_millis(2000);
 
@@ -217,7 +223,7 @@ impl Preview {
         let shown = self.presenter.draw(|| {}); self.dirty = !shown;
         if shown && !self.presented { self.presented = true;
             // the first picture on screen: the space-bar panel plays, a small Finder preview stays a silent still (row 615, points 1-2)
-            if let Some(v) = self.video.as_mut() { if v.auto { v.auto = false; if room { v.t.play(); self.dirty = true; } } } }
+            if let Some(v) = self.video.as_mut() { if v.auto { v.auto = false; if room { v.t.play(); self.dirty = true; } note(&format!("first picture on screen: view {w:.0}x{h:.0}, plays by itself: {room}")); } } }
     }
 }
 
@@ -262,6 +268,7 @@ pub unsafe extern "C" fn qlp_open(ca_layer: *mut c_void, ns_view: *mut c_void, w
         layers: Picker::new(names, layer_at), colors: Picker::new(color_names, color_at), presets, pass_rx: None, pass: None, bound: false,
         job: 0, rx, tx, inside: false, moved: now - REST, pointer: (-1.0, -1.0), bar: Ramp::new(0.0, 160), bar_rect: Rect::ZERO, dirty: true };
     p.decode(); p.color();
+    note(&format!("open: {} (video {}, sound {}), view {w}x{h} scale {scale}", p.facts, p.video.is_some(), p.video.as_ref().is_some_and(|v| v.t.audio.has_audio())));
     Box::into_raw(Box::new(p))
 }
 
@@ -281,11 +288,15 @@ pub unsafe extern "C" fn qlp_pointer(p: *mut Preview, x: f64, y: f64, kind: i32)
     let e = match kind { 0 => Event::Move { x, y }, 1 => Event::Down { x, y, button: Button::Primary }, 2 => Event::Up { x, y, button: Button::Primary }, _ => Event::Leave };
     s.inside = kind != 3; if kind != 3 { s.pointer = (x, y); s.moved = now; }
     match kind { 1 => { s.seen[0] += 1; s.last = "down"; } 2 => { s.seen[1] += 1; s.last = "up"; } 3 => { s.seen[2] += 1; s.last = "leave"; } _ => {} }
+    if kind != 0 { note(&format!("pointer {} at {x:.0},{y:.0} (view {}x{})", s.last, s.size.0, s.size.1)); }
     let bounds = Rect::new(0.0, 0.0, s.size.0 as f64, s.size.1 as f64);
     let menu_open = s.layers.is_open() || s.colors.is_open(); let mut keep = false;
     if let (Some(v), false) = (s.video.as_mut(), menu_open) {
         let st = v.state(); let mut on_control = false;
-        for (bt, dir) in [(&mut v.rew, -1), (&mut v.ff, 1)] { match bt.event(&e, now) { Response::PressBegan => { Playback::apply(&mut v.t, Action::ShuttleBegin(dir), now); } Response::PressEnded => { Playback::apply(&mut v.t, Action::ShuttleEnd, now); } _ => {} } on_control |= bt.is_pressed(); }
+        for (bt, dir) in [(&mut v.rew, -1), (&mut v.ff, 1)] { match bt.event(&e, now) {
+            Response::PressBegan => { Playback::apply(&mut v.t, Action::ShuttleBegin(dir), now); note(&format!("shuttle {dir} began: fast seek {}, audio shuttle {}, frame {}", v.t.is_fast_seeking(), v.t.audio.shuttle_active(), v.t.current_frame())); }
+            Response::PressEnded => { let f0 = v.t.current_frame(); Playback::apply(&mut v.t, Action::ShuttleEnd, now); note(&format!("shuttle {dir} ended by event kind {kind}: frame {f0} -> {}", v.t.current_frame())); }
+            _ => {} } on_control |= bt.is_pressed(); }
         for bt in [&mut v.play, &mut v.big] { if bt.event(&e, now) == Response::Clicked { v.t.toggle_playback(); } }
         if v.mute.event(&e, now) == Response::Clicked { Playback::apply(&mut v.t, Action::ToggleMute, now); keep = true; }
         let (cmds, _) = v.scrub.event(&e, now, &st, s.scale);
@@ -315,7 +326,9 @@ pub unsafe extern "C" fn qlp_pointer(p: *mut Preview, x: f64, y: f64, kind: i32)
 pub unsafe extern "C" fn qlp_key(p: *mut Preview, ch: u32, special: u32, pressed: bool, repeat: bool) { let s = unsafe { &mut *p }; let now = Instant::now();
     let Some(v) = s.video.as_mut() else { return };
     let key = match special { 1 => qcv_player::Key::Home, 2 => qcv_player::Key::End, _ => match char::from_u32(ch) { Some(c) if c.is_ascii_alphabetic() => qcv_player::Key::Char(c), _ => return } };
-    let Some(a) = qcv_player::map_key(key, qcv_player::Mods::default(), pressed, repeat) else { return };
+    let mapped = qcv_player::map_key(key, qcv_player::Mods::default(), pressed, repeat);
+    note(&format!("key {key:?} pressed {pressed} repeat {repeat} -> {mapped:?}"));
+    let Some(a) = mapped else { return };
     if !matches!(a, Action::ShuttleBegin(_) | Action::ShuttleEnd | Action::Step(_) | Action::TogglePlayback | Action::SeekToStart | Action::SeekToEnd | Action::ToggleMute) { return }
     Playback::apply(&mut v.t, a, now); if a == Action::ToggleMute { s.keep(); } s.dirty = true;
 }

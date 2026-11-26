@@ -2,8 +2,11 @@
 // (../src/thumb.rs - an EXR's first layer, an MXF's first frame), this file hands it to the system. No picture: an
 // error, and the system draws its own icon.
 import AppKit
+import os
 import QuickLookThumbnailing
 
+/// The Rust library's line for the system's log (`note` in ../src/lib.rs).
+@_cdecl("qlp_host_log") func qlp_host_log(_ msg: UnsafePointer<CChar>) { let m = String(cString: msg); Logger(subsystem: "app.qcview.quicklook", category: "preview").notice("\(m, privacy: .public)") }
 @_silgen_name("qlt_thumb") func qlt_thumb(_ path: UnsafePointer<CChar>, _ maxPx: UInt32, _ w: UnsafeMutablePointer<UInt32>, _ h: UnsafeMutablePointer<UInt32>) -> UnsafeMutablePointer<UInt8>?
 @_silgen_name("qlt_free") func qlt_free(_ p: UnsafeMutablePointer<UInt8>?, _ w: UInt32, _ h: UInt32)
 
