@@ -1,0 +1,21 @@
+[package]
+name = "s22-preview-player"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "SPIKE S22 (dies after its verdict): the family's player - one MXF with sound - inside a Quick Look preview's view: the audio unit, VideoToolbox, the keys and the memory in the sandbox"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+min-present = { path = "../../crates/min-present" }
+min-ui = { path = "../../crates/min-ui" }
+min-theme = { path = "../../crates/min-theme" }
+qcv-player = { path = "../../crates/qcv-player" }
+vello = { workspace = true }
+kurbo = { workspace = true }
+wgpu = { workspace = true }
+libc = { workspace = true }

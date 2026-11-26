@@ -5489,6 +5489,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "s22-preview-player"
+version = "0.0.0"
+dependencies = [
+ "kurbo 0.13.1",
+ "libc",
+ "min-present",
+ "min-theme",
+ "min-ui",
+ "qcv-player",
+ "vello",
+ "wgpu",
+]
+
+[[package]]
 name = "s3-text"
 version = "0.0.0"
 dependencies = [
