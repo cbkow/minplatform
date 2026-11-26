@@ -27,6 +27,10 @@ impl Popover {
         let (w, h) = (content_w * scale + 2.0 * pad, content_h * scale + th + 2.0 * pad);
         let room_above = anchor.y0 - off - h >= bounds.y0; let room_below = anchor.y1 + off + h <= bounds.y1;
         self.placement = match prefer { Placement::Above => if room_above || !room_below { Placement::Above } else { Placement::Below }, Placement::Below => if room_below || !room_above { Placement::Below } else { Placement::Above } };
+        // Room on neither side (a long list in a small window - the Quick Look preview, 2026-11-26): the side with more of
+        // it, and no taller than what is there. The owner of the content scrolls it (`Picker` does).
+        let (above, below) = (anchor.y0 - off - bounds.y0 - pad, bounds.y1 - anchor.y1 - off - pad);
+        let h = if room_above || room_below { h } else { self.placement = if above >= below { Placement::Above } else { Placement::Below }; h.min(above.max(below).max(th + 2.0 * pad)) };
         let y0 = match self.placement { Placement::Above => anchor.y0 - off - h, Placement::Below => anchor.y1 + off };
         let x0 = anchor.x0.clamp(bounds.x0 + pad, (bounds.x1 - w - pad).max(bounds.x0));
         self.rect = Rect::new(x0, y0, x0 + w, y0 + h);

@@ -9,6 +9,7 @@ import QuartzCore
 @_silgen_name("qlp_size") func qlp_size(_ p: OpaquePointer, _ w: UnsafeMutablePointer<UInt32>, _ h: UnsafeMutablePointer<UInt32>)
 @_silgen_name("qlp_resize") func qlp_resize(_ p: OpaquePointer, _ w: UInt32, _ h: UInt32, _ scale: Double)
 @_silgen_name("qlp_pointer") func qlp_pointer(_ p: OpaquePointer, _ x: Double, _ y: Double, _ kind: Int32)
+@_silgen_name("qlp_scroll") func qlp_scroll(_ p: OpaquePointer, _ dy: Double)
 @_silgen_name("qlp_tick") func qlp_tick(_ p: OpaquePointer)
 @_silgen_name("qlp_close") func qlp_close(_ p: OpaquePointer?)
 
@@ -29,6 +30,7 @@ final class QCVPreviewView: NSView {
     override func mouseExited(with e: NSEvent) { send(e, 3) }
     override func mouseDown(with e: NSEvent) { send(e, 1) }
     override func mouseUp(with e: NSEvent) { send(e, 2) }
+    override func scrollWheel(with e: NSEvent) { if let h = handle { qlp_scroll(h, -Double(e.scrollingDeltaY) * (e.hasPreciseScrollingDeltas ? 1 : 10) * scale) } }
     deinit { timer?.invalidate(); qlp_close(handle) }
 }
 

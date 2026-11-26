@@ -11,13 +11,15 @@ use vello::Scene;
 pub struct Picker {
     pub options: Vec<String>, pub selected: usize, pub enabled: bool, pub rect: Rect,
     pub menu: Popover, hovered: bool, hover: Ramp, hover_item: Option<usize>, pressed_item: Option<usize>, scale: f64,
+    /// how far the open menu is scrolled, px (a list taller than the room the window gives it)
+    scroll: f64,
     /// the resting background (None = the token's): a picker on a layer-2 card sits one step darker, recessed (the token is the
     /// card's own grey there — the walk 2026-11-09)
     pub bg: Option<min_theme::Color>,
 }
 
 impl Picker {
-    pub fn new(options: Vec<String>, selected: usize) -> Picker { Picker { selected: selected.min(options.len().saturating_sub(1)), options, enabled: true, rect: Rect::ZERO, menu: Popover::new(""), hovered: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), hover_item: None, pressed_item: None, scale: 1.0, bg: None } }
+    pub fn new(options: Vec<String>, selected: usize) -> Picker { Picker { selected: selected.min(options.len().saturating_sub(1)), options, enabled: true, rect: Rect::ZERO, menu: Popover::new(""), hovered: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), hover_item: None, pressed_item: None, scale: 1.0, scroll: 0.0, bg: None } }
     pub fn hovered(&self) -> bool { self.hovered }
     pub fn is_open(&self) -> bool { self.menu.open }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
@@ -32,10 +34,13 @@ impl Picker {
     fn item_h(&self) -> f64 { t::MENU_ITEM_HEIGHT as f64 * self.scale }
     fn item_at(&self, x: f64, y: f64) -> Option<usize> {
         if !self.menu.open || !self.menu.content.contains(kurbo::Point::new(x, y)) { return None }
-        let i = ((y - self.menu.content.y0) / self.item_h()).floor() as usize;
+        let i = ((y - self.menu.content.y0 + self.scroll) / self.item_h()).floor() as usize;
         (i < self.options.len()).then_some(i)
     }
     pub fn close(&mut self) { self.menu.close(); self.hover_item = None; self.pressed_item = None; }
+    fn scroll_max(&self) -> f64 { (self.options.len() as f64 * self.item_h() - self.menu.content.height()).max(0.0) }
+    /// The wheel over the open menu, px (positive = further down the list). True when the menu is open: it takes the wheel.
+    pub fn wheel(&mut self, dy: f64) -> bool { if !self.menu.open { return false } self.scroll = (self.scroll + dy).clamp(0.0, self.scroll_max()); self.hover_item = None; true }
     /// Returns (the newly chosen index, redraw needed, consumed). While the menu is open every press is consumed: a
     /// press outside closes it and goes no further (minNotes' flyout rule).
     pub fn event(&mut self, e: &Event, now: Instant, fonts: &mut Fonts, bounds: Rect, scale: f64) -> (Option<usize>, bool, bool) {
@@ -61,6 +66,8 @@ impl Picker {
                     let (mw, _) = self.measure(fonts, scale);
                     let w = (mw / scale).max(t::MENU_MIN_WIDTH as f64).max(self.rect.width() / scale) + t::SPACING_300 as f64;   // room for the tick
                     self.menu.open_at_prefer(fonts, self.rect, w, n * t::MENU_ITEM_HEIGHT as f64, bounds, scale, Placement::Below);
+                    // a list that does not fit starts with the chosen row in sight
+                    self.scroll = (self.selected as f64 * self.item_h() - (self.menu.content.height() - self.item_h()) / 2.0).clamp(0.0, self.scroll_max());
                     consumed = true;
                 }
                 Event::Leave => self.hovered = false,
@@ -89,20 +96,39 @@ impl Picker {
         if !self.menu.open { return }
         self.menu.paint(scene, fonts, scale);
         let ih = self.item_h(); let c = self.menu.content; let edge = t::MENU_ITEM_EDGE_TO_TEXT as f64 * scale;
+        let clipped = self.scroll_max() > 0.0; if clipped { scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &c); }
         for (i, o) in self.options.iter().enumerate() {
-            let r = Rect::new(c.x0, c.y0 + i as f64 * ih, c.x1, c.y0 + (i + 1) as f64 * ih);
+            let r = Rect::new(c.x0, c.y0 + i as f64 * ih - self.scroll, c.x1, c.y0 + (i + 1) as f64 * ih - self.scroll);
+            if r.y1 < c.y0 || r.y0 > c.y1 { continue }
             if self.pressed_item == Some(i) { paint::rounded(scene, r, t::PICKER_CORNER_RADIUS as f64 * scale, t::MENU_ITEM_DOWN_COLOR); }
             else if self.hover_item == Some(i) { paint::rounded(scene, r, t::PICKER_CORNER_RADIUS as f64 * scale, t::MENU_ITEM_HOVER_COLOR); }
             let l = fonts.layout(o, Family::Sans, t::BODY_SIZE_M * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::MENU_ITEM_CONTENT_COLOR));
             crate::fonts::draw_layout(scene, &l, Affine::translate((r.x0 + edge, r.y0 + (ih - l.height() as f64) / 2.0)));
             if i == self.selected { if let Some(g) = fonts.icon("check", t::ICON_SIZE_SMALL * scale as f32, paint::color(t::MENU_ITEM_CONTENT_COLOR)) { crate::fonts::draw_layout(scene, &g, Affine::translate((r.x1 - edge - g.width() as f64, r.y0 + (ih - g.height() as f64) / 2.0))); } }
         }
+        if clipped { scene.pop_layer(); }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A list taller than the window: the menu takes the side with more room, stays inside the window, starts with the
+    /// chosen row in sight, and the wheel reaches the last row.
+    #[test]
+    fn a_long_list_in_a_small_window_stays_inside_and_scrolls() {
+        let now = Instant::now(); let mut fonts = Fonts::new();
+        let bounds = Rect::new(0.0, 0.0, 600.0, 300.0);
+        let mut p = Picker::new((0..16).map(|i| format!("Preset {i}")).collect(), 12);
+        p.rect = Rect::new(20.0, 250.0, 180.0, 274.0);   // at the foot, as the preview's bar
+        p.event(&Event::Down { x: 30.0, y: 260.0, button: Button::Primary }, now, &mut fonts, bounds, 1.0);
+        assert!(p.is_open() && p.menu.placement == Placement::Above);
+        assert!(p.menu.rect.y0 >= bounds.y0 && p.menu.rect.y1 <= p.rect.y0, "inside the window, above the field: {:?}", p.menu.rect);
+        let ih = p.item_h(); let c = p.menu.content;
+        assert!(p.scroll > 0.0 && 12.0 * ih - p.scroll >= 0.0 && 13.0 * ih - p.scroll <= c.height() + 0.5, "the chosen row is in sight");
+        assert!(p.wheel(10_000.0)); assert_eq!(p.item_at(c.x0 + 5.0, c.y1 - 2.0), Some(15));
+        assert!(p.wheel(-10_000.0)); assert_eq!(p.item_at(c.x0 + 5.0, c.y0 + 2.0), Some(0));
+    }
     #[test]
     fn opens_below_picks_on_release_and_a_press_outside_closes() {
         let now = Instant::now(); let mut fonts = Fonts::new();

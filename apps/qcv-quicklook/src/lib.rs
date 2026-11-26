@@ -192,6 +192,10 @@ pub unsafe extern "C" fn qlp_pointer(p: *mut Preview, x: f64, y: f64, kind: i32)
     s.dirty = true;
 }
 
+/// The wheel, pixels (positive = further down a list): an open menu scrolls.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qlp_scroll(p: *mut Preview, dy: f64) { let s = unsafe { &mut *p }; if s.layers.wheel(dy) || s.colors.wheel(dy) { s.dirty = true; } }
+
 /// Called at the display's pace by the shell: takes what the workers finished and draws when something changed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qlp_tick(p: *mut Preview) { let s = unsafe { &mut *p }; let now = Instant::now();
