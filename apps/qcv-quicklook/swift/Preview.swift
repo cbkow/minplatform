@@ -15,6 +15,7 @@ import QuartzCore
 @_silgen_name("qlp_scroll") func qlp_scroll(_ p: OpaquePointer, _ dy: Double)
 @_silgen_name("qlp_key") func qlp_key(_ p: OpaquePointer, _ ch: UInt32, _ special: UInt32, _ pressed: Bool, _ isRepeat: Bool)
 @_silgen_name("qlp_debug") func qlp_debug(_ p: OpaquePointer, _ on: Bool)
+@_silgen_name("qlp_held") func qlp_held(_ p: OpaquePointer, _ held: Bool)
 @_silgen_name("qlp_tick") func qlp_tick(_ p: OpaquePointer)
 @_silgen_name("qlp_close") func qlp_close(_ p: OpaquePointer?)
 
@@ -66,7 +67,7 @@ final class QCVPreviewView: NSView {
         var w: UInt32 = 0, ht: UInt32 = 0; qlp_size(h, &w, &ht)
         if w > 0 && ht > 0 { preferredContentSize = NSSize(width: Double(w) / s, height: Double(ht) / s) }
         qlp_tick(h)
-        v.timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak v] _ in if let h = v?.handle { qlp_tick(h) } }
+        v.timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak v] _ in if let h = v?.handle { qlp_held(h, NSEvent.pressedMouseButtons & 1 != 0); qlp_tick(h) } }   // the button read here: the panel keeps a still press until its release (qlp_held)
         if let t = v.timer { RunLoop.main.add(t, forMode: .common) }
         handler(nil)
     }

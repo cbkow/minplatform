@@ -88,6 +88,9 @@ pub struct Preview {
     was_muted: bool, presented: bool,
     /// a walk build's readout (`qlp_debug`): the pointer events counted (down, up, leave) and the last one
     debug: bool, seen: [u32; 3], last: &'static str,
+    /// the held press the view begins itself (`qlp_held`): the button seen down since, a press of ours running, a press
+    /// the panel delivered running, and until when the panel's late pair is dropped
+    held_since: Option<Instant>, phantom: bool, real_down: bool, swallow: Option<Instant>,
 }
 
 fn frame(path: &str, layer: &str) -> Result<Frame, String> {
@@ -264,7 +267,7 @@ pub unsafe extern "C" fn qlp_open(ca_layer: *mut c_void, ns_view: *mut c_void, w
         (dims, dot(vec![format!("{} × {}", dims.0, dims.1), kind.to_string(), min_image::exr::compression(&path).unwrap_or_default().to_string()]))
     };
     let (tx, rx) = mpsc::channel(); let now = Instant::now();
-    let mut p = Preview { debug: false, seen: [0; 3], last: "-", video, was_muted, presented: false, presenter, layer, fonts: Fonts::new(), scale, size: (w, h), path, state, dims, facts, error,
+    let mut p = Preview { held_since: None, phantom: false, real_down: false, swallow: None, debug: false, seen: [0; 3], last: "-", video, was_muted, presented: false, presenter, layer, fonts: Fonts::new(), scale, size: (w, h), path, state, dims, facts, error,
         layers: Picker::new(names, layer_at), colors: Picker::new(color_names, color_at), presets, pass_rx: None, pass: None, bound: false,
         job: 0, rx, tx, inside: false, moved: now - REST, pointer: (-1.0, -1.0), bar: Ramp::new(0.0, 160), bar_rect: Rect::ZERO, dirty: true };
     p.decode(); p.color();
@@ -285,6 +288,32 @@ pub unsafe extern "C" fn qlp_resize(p: *mut Preview, w: u32, h: u32, scale: f64)
 /// kind: 0 move, 1 primary down, 2 primary up, 3 the pointer left. Pixels, the top left the origin.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qlp_pointer(p: *mut Preview, x: f64, y: f64, kind: i32) { let s = unsafe { &mut *p }; let now = Instant::now();
+    // a press the view began by itself (`qlp_held`) is ended there too: the panel's own late press and release are dropped
+    if matches!(kind, 1 | 2) && (s.phantom || s.swallow.is_some_and(|t| now < t)) { return; }
+    match kind { 1 => s.real_down = true, 2 | 3 => s.real_down = false, _ => {} }
+    pointer_event(s, x, y, kind, now);
+}
+
+/// The primary button's state, read by the shell at every tick. Quick Look's panel keeps a press that does not move
+/// until its release and then hands over both at once (seen in the log 2026-11-26: down and up in one millisecond), so
+/// a held rewind or fast-forward never began. The view therefore begins the press itself once the button has been down
+/// for `HOLD` over one of the two with no press delivered, and ends it when the button comes up.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qlp_held(p: *mut Preview, held: bool) { let s = unsafe { &mut *p }; let now = Instant::now();
+    const HOLD: Duration = Duration::from_millis(150);
+    let (x, y) = s.pointer;
+    if !held {
+        s.held_since = None;
+        if s.phantom { s.phantom = false; s.swallow = Some(now + Duration::from_millis(400)); pointer_event(s, x, y, 2, now); }
+        return;
+    }
+    if s.phantom || s.real_down || !s.inside || s.layers.is_open() || s.colors.is_open() { return; }
+    let on = s.video.as_ref().is_some_and(|v| { let at = kurbo::Point::new(x, y); v.rew.rect.contains(at) || v.ff.rect.contains(at) });
+    if !on { s.held_since = None; return; }
+    if now.duration_since(*s.held_since.get_or_insert(now)) >= HOLD { s.phantom = true; note("a held press the panel kept: begun here"); pointer_event(s, x, y, 1, now); }
+}
+
+fn pointer_event(s: &mut Preview, x: f64, y: f64, kind: i32, now: Instant) {
     let e = match kind { 0 => Event::Move { x, y }, 1 => Event::Down { x, y, button: Button::Primary }, 2 => Event::Up { x, y, button: Button::Primary }, _ => Event::Leave };
     s.inside = kind != 3; if kind != 3 { s.pointer = (x, y); s.moved = now; }
     match kind { 1 => { s.seen[0] += 1; s.last = "down"; } 2 => { s.seen[1] += 1; s.last = "up"; } 3 => { s.seen[2] += 1; s.last = "leave"; } _ => {} }
