@@ -125,8 +125,10 @@ impl Preview {
         } else { self.bar_rect = Rect::ZERO; self.layers.rect = Rect::ZERO; self.colors.rect = Rect::ZERO; }
         let dst = self.layer.scene_mut(); dst.reset(); dst.append(&scene, None);
         self.layer.render(&self.presenter.engine.device, &self.presenter.engine.queue);
-        self.presenter.draw(|| {});
-        self.dirty = false;
+        // Not presented (the panel has not put the view on screen yet - the surface says "occluded" - or a drawable was not
+        // to be had): the picture is still owed, and the next tick tries again. Clearing the flag here left the first
+        // file black until the pointer moved (the owner's walk, 2026-11-26).
+        self.dirty = !self.presenter.draw(|| {});
     }
 }
 
