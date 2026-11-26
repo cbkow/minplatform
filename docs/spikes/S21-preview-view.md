@@ -1,10 +1,10 @@
 # S21 - the family's presenter and min-ui inside a Quick Look preview's view (opened 2026-11-26)
 
-**Status: OPEN - the drawing half is answered, the hand's half is not (2026-11-26). The presenter draws an EXR into the
-preview's own view on an extended-range surface, with a `min-ui` picker over it, from a sandboxed extension; the first
-picture is there about 170 ms after the request once the machine has run it once (1.8 s the very first time). Whether
-the pointer opens the picker and picks a layer, and what the keys do, waits for the owner's walk: no script may press
-on the owner's desktop.**
+**Status: VERDICT (macOS 27.2) - PASS (2026-11-26). QCView's presenter draws an EXR into the Quick Look preview's own
+view on the extended-range surface, from a sandboxed extension, with a `min-ui` picker over it that the pointer opens
+and chooses from. In Finder, on the owner's own files: the first picture 165 ms after the request (bar: 300 ms), a
+layer changed in 34 ms. NOT answered: which keys reach the view, and how moving from file to file with Finder's arrows
+behaves.**
 
 ## Why
 
@@ -26,7 +26,7 @@ picture within **300 ms** of the request, warm, at 1920 x 1080.
 
 ## Time box
 
-Three hours. About one used so far.
+Three hours. About an hour and a half used.
 
 ## How to run
 
@@ -72,9 +72,13 @@ four layers. The extension is 37 MB (the Rust library unstripped, with its debug
    works"). So a walk build is signed with the Developer ID under a walk identifier, and its readouts are on screen
    (the bar shows the timings and the keys), since its container's log is closed (finding 5).
 
+## The owner's walk (2026-11-26, Finder, the Developer ID build, their own EXR files)
+
+"looks great. Layers work. 165ms first 34ms change": the bar shows, the popup opens and a choice changes the layer;
+the bar's own readouts were 165 ms to the first picture and 34 ms for a layer change.
+
 ## Not seen
 
-- The pointer: hover showing the bar, a press opening the popup, a choice changing the layer (the log records each).
 - The keys: which reach the view, which the panel keeps.
 - Finder's arrows from one file to the next: whether the process stays, the time per file.
 - Finder's preview column, full screen, a second screen, light mode.
@@ -83,4 +87,5 @@ four layers. The extension is 37 MB (the Rust library unstripped, with its debug
 
 ## Verdict
 
-None yet.
+PASS. The extension can be built from the family's own presenter and `min-ui`, with no AppKit controls, and it is
+fast enough to browse with. The spike dies here: `spikes/s21-preview-view` is not the extension's start.
