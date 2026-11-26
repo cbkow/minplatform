@@ -1,7 +1,10 @@
 # S22 - the family's player, with sound, inside a Quick Look preview (opened 2026-11-26)
 
-**Status: OPEN (2026-11-26). Built and registered; the extension starts on an MXF, stays alive and leaves no crash
-report. Everything that answers the question is on its screen and in the owner's ears: the walk is owed.**
+**Status: VERDICT (macOS 27.2) - PASS on the question, the bar's own number not read (2026-11-26). QCView's player
+plays an MXF with sound inside the sandboxed preview extension: the CoreAudio output unit starts (18 ms) and is heard,
+the sound stops when the panel closes, the keys reach the view after a click, a VideoToolbox context is made in the
+sandbox, and DNxHR HQ at 1920 x 1080 plays in software without a dropped or late frame at a 185 MB peak. NOT read
+off: the ProRes clip past 30 seconds (the bar as written), and whether its decode says VideoToolbox.**
 
 ## Why
 
@@ -45,9 +48,19 @@ The owner's walk, 2026-11-26, Finder's space-bar panel, the Developer ID build:
 - "I don't think the thumbnails should be full video though": Finder's small previews (the preview column, the gallery,
   Get Info) show the same extension, and the spike plays wherever it is shown. For the player: small views are a still.
 
-Still owed for the bar: the ProRes clip past 30 seconds (dropped, late, the peak memory, whether its decode says
-VideoToolbox), the keys after a click, and whether the sound stops when the panel closes or moves to another file.
+Later the same walk: "keys work, sound stops when I close the panel."
+
+Not read off: the ProRes clip past 30 seconds (dropped, late, the peak memory, whether its decode says VideoToolbox);
+the sound when Finder's arrows move to another file.
+
+## Findings for the player
+
+1. Sound needs nothing from us: no entitlement, no question to the person; the unit is quick to start here.
+2. The keys arrive once the view has been clicked (it then is the first responder). Space and the arrows stay the panel's.
+3. Finder's small previews run the same extension: a player that starts by itself plays in the preview column too.
+   The view's size is the only thing that tells the two apart.
+4. 185 MB with no scrub decoder: the scrub cache's budget is the memory's main term and is ours to choose.
 
 ## Verdict
 
-None yet.
+PASS: the MXF player can be built on `Transport` and `AudioPlayer` as they are. The spike dies here.
