@@ -97,8 +97,8 @@ spike's either when it was registered again, ad hoc and under the Developer ID, 
 `qlmanage -r`, `qlmanage -r cache` and a restart of the thumbnails agent. An MXF's request reached each of them every
 time. The morning's placard run above (EXR "OURS", the magenta picture looked at) was real; what changed between is
 not known. Finding 1 therefore stands for the PREVIEW (walked by the owner all day) and for MXF, DPX and MKV
-thumbnails; **for the EXR thumbnail it was seen once and could not be had again.** Not tried: after a restart of the
-Mac, another machine, a notarized bundle, an EXR type declaration in the host's Info.plist (Tristimulator imports one).
+thumbnails; **for the EXR thumbnail it was seen once and could not be had again.** Tried after that, no change: the EXR type declared as imported, with a document type, in the host's Info.plist (as
+Tristimulator's host has it). Not tried: after a restart of the Mac, another machine, a notarized bundle.
 
 ## Not seen
 
