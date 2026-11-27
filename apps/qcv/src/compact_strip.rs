@@ -89,6 +89,7 @@ impl CompactStrip {
         // the controls' own backdrop so the scrub line never runs under them
         paint::rect(scene, Rect::new(self.rect.x0, self.rect.y0 + t::HAIRLINE as f64 * scale, self.scrub_rect.x0, self.rect.y1), t::SCRUBBER_BACKGROUND_COLOR);
         paint::rect(scene, Rect::new(self.scrub_rect.x1, self.rect.y0 + t::HAIRLINE as f64 * scale, self.rect.x1, self.rect.y1), t::SCRUBBER_BACKGROUND_COLOR);
+        paint::hline(scene, self.rect.x0, self.rect.x1, self.rect.y0, t::HAIRLINE as f64 * scale, t::DIVIDER_COLOR);   // the scrubber draws this line over its own band only; here across the window
         self.rew.paint(scene, fonts, scale, now); self.ff.paint(scene, fonts, scale, now); self.play.paint(scene, fonts, scale, now); self.pin.paint(scene, fonts, scale, now); self.exit.paint(scene, fonts, scale, now);
         if self.live { let d = 8.0 * scale; let y = self.scrub_rect.y0 + (self.scrub_rect.height() - d) / 2.0; paint::rounded(scene, Rect::new(self.scrub_rect.x0, y, self.scrub_rect.x0 + d, y + d), d / 2.0, LIVE_RED); }
         let c = if self.live { LIVE_RED } else if self.tc_hover { t::NEUTRAL_CONTENT_COLOR_HOVER } else { t::NEUTRAL_CONTENT_COLOR_DEFAULT };
