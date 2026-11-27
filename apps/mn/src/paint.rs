@@ -243,6 +243,8 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                     let (frames, fps) = (rec.get("frames").and_then(|f| f.as_i64()).unwrap_or(1).max(1), rec.get("fps").and_then(|f| f.as_f64()).unwrap_or(24.0));
                     let (at, playing) = match me { Some(m) => (m.frame as i64, m.playing), None => (rec.get("frame").and_then(|f| f.as_i64()).unwrap_or(0), false) };
                     let strip = Rect::new(whole.x0, r.y1, whole.x1, r.y1 + mn_layout::VIDEO_STRIP as f64 * s); let reserve = video_reserve(!notes.is_empty(), me.as_ref(), false, s); let (play, track) = video_strip(strip, s, reserve);
+                    // its ground: the plate a canvas card's strip has (the owner 2026-11-26: on the bare page the controls had nothing behind them)
+                    scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &RoundedRect::from_rect(Rect::new(strip.x0, strip.y0 + 2.0 * s, strip.x1, strip.y1 - 2.0 * s), 6.0 * s));
                     strip_buttons(scene, fonts, strip, play, playing, s);
                     let t = fonts.layout(&crate::video::timecode(at, fps), Family::Mono, (12.0 * s) as f32, 400.0, c(t::NEUTRAL_CONTENT_COLOR_DEFAULT)); draw_layout(scene, &t, Affine::translate((strip.x0 + 86.0 * s, strip.center().y - t.height() as f64 / 2.0)));
                     if track.width() > 8.0 * s { let x = track.x0 + track.width() * (at.clamp(0, frames - 1) as f64 / (frames - 1).max(1) as f64);
