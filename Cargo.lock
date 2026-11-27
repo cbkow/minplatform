@@ -3308,7 +3308,7 @@ dependencies = [
 
 [[package]]
 name = "mn"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -6584,7 +6584,7 @@ dependencies = [
 
 [[package]]
 name = "ufb"
-version = "2.0.8"
+version = "2.0.9"
 dependencies = [
  "ab_glyph",
  "arboard",

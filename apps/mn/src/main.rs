@@ -78,7 +78,8 @@ mod text_element;
 const MARGIN: f64 = 48.0;
 const PAD: f64 = 28.0;
 
-struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: UiLayer, fonts: Fonts, ime_area: Option<Rect>, /// text input is on (it is turned off while a video block is the current one: a held key shuttles, it must not offer accents)
+struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: UiLayer, fonts: Fonts, ime_area: Option<Rect>, /// Windows: when the window's screen was last looked at (row 602)
+    screen_checked: Option<Instant>, /// text input is on (it is turned off while a video block is the current one: a held key shuttles, it must not offer accents)
     ime_on: bool }
 
 /// Input methods on (accents by long press, dead keys, Chinese / Japanese / Korean input), with the caret's place for
@@ -372,6 +373,14 @@ fn sample() -> Doc {
 
 impl App {
     fn redraw(&mut self) {
+        // Windows: the window follows its screen (rows 602, 618; the family's check, `Presenter::follow_screen`) - on one that
+        // shows HDR, white is the system's SDR white and not scRGB's 80 nits. Looked at when a frame is drawn, 2 s apart at most.
+        if cfg!(windows) { if let Some(g) = self.gpu.as_mut().filter(|g| g.screen_checked.is_none_or(|t| t.elapsed().as_secs_f32() >= 2.0)) {
+            g.screen_checked = Some(Instant::now());
+            let name = g.window.current_monitor().and_then(|m| m.name().map(|n| n.to_string())).unwrap_or_default();
+            let (hdr, changed) = g.presenter.follow_screen(&name);
+            if changed { log::info!("the screen {name}: HDR {hdr:?}, white x{:.2}, {}", g.presenter.engine.output_gain(), if g.presenter.sdr_surface() { "the 10-bit sRGB surface" } else { "the fp16 scRGB surface" }); g.window.request_redraw(); }
+        } }
         // reading (row 358): the editor in hand takes no change, the tools' band is put away, a canvas only moves; a change that was refused is answered once
         self.guide_ensure();
         self.files.pshow = if matches!(self.files.pick, Some(ink::Pick::Draw(ink::Ink::Pt(_)))) { self.page_sel_line().map(|(_, frame, _, _, size, lines, i)| (frame, size.0, lines[i].clone())) } else { None };
@@ -3634,7 +3643,7 @@ impl ApplicationHandler for App {
         ime(window.as_ref().as_ref(), Some(Rect::new(0.0, 0.0, 1.0, 1.0)), true);
         #[cfg(target_os = "macos")] { let mut m = menu::AppMenu::new(); m.menu.init_for_nsapp(); m.set_recent(&recent_list()); self.menu = Some(m); } self.sync_recent(); self.sync_export_checks(); if self.pinned { self.set_pinned(true, false); }   // (as this machine left it: row 366)
         startup_log("text element, input method, menu ready");
-        self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None, ime_on: true }); self.t0 = Some(Instant::now()); self.title();
+        self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None, screen_checked: None, ime_on: true }); self.t0 = Some(Instant::now()); self.title();
         startup_log("fonts loaded");
         // the first frame, then the window (Windows: see where it is made unseen)
         if cfg!(windows) { self.redraw(); if let Some(g) = self.gpu.as_ref() { g.window.set_visible(true); g.window.request_redraw(); } }
