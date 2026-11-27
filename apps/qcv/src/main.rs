@@ -1452,6 +1452,7 @@ impl App {
                 use winit::window::ResizeDirection as D; use winit::cursor::CursorIcon as C;
                 let sz = g.window.surface_size(); let (w, h, m) = (sz.width as f64, sz.height as f64, 6.0 * scale);
                 let dir = e.pos().and_then(|(x, y)| match (x < m, x >= w - m, y < m, y >= h - m) { (true, _, true, _) => Some((D::NorthWest, C::NwseResize)), (_, true, true, _) => Some((D::NorthEast, C::NeswResize)), (true, _, _, true) => Some((D::SouthWest, C::NeswResize)), (_, true, _, true) => Some((D::SouthEast, C::NwseResize)), (true, ..) => Some((D::West, C::EwResize)), (_, true, ..) => Some((D::East, C::EwResize)), (_, _, true, _) => Some((D::North, C::NsResize)), (_, _, _, true) => Some((D::South, C::NsResize)), _ => None });
+                if let Some((x, y)) = e.pos() { if matches!(e, min_ui::Event::Down { .. }) || y < 16.0 * scale || y >= h - 16.0 * scale { let (uw, uh) = g.ui.as_ref().map(|u| u.size()).unwrap_or((0, 0)); log::info!("compact edge probe: {} at {x:.0},{y:.0}; surface {w:.0}x{h:.0}, ui {uw}x{uh}, outer {:?}, scale {scale}, edge {:?}", if matches!(e, min_ui::Event::Down { .. }) { "down" } else { "move" }, g.window.outer_size(), dir.map(|d| d.0)); } }
                 if let Some((d, c)) = dir {
                     if g.cursor != c { g.cursor = c; g.window.set_cursor(winit::cursor::Cursor::Icon(c)); }
                     if matches!(e, min_ui::Event::Down { .. }) { if let Err(err) = g.window.drag_resize_window(d) { log::warn!("window resize: {err}"); } }
