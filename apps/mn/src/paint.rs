@@ -22,6 +22,8 @@ pub fn link() -> Color { c(t::ACCENT_CONTENT_COLOR_DEFAULT) }
 pub fn subdued() -> Color { dim() }
 fn dim() -> Color { c(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT) }
 fn line() -> Color { c(t::DIVIDER_COLOR) }
+/// A video strip's line to scrub on: the players' light line (QCView's glass bars, canon row 618) - the divider's grey was faint.
+fn strip_line() -> Color { Color::WHITE.multiply_alpha(0.34) }
 fn panel() -> Color { c(t::BACKGROUND_LAYER_2_COLOR) }
 fn header() -> Color { c(t::BACKGROUND_LAYER_1_COLOR) }
 pub fn accent() -> Color { c(t::ACCENT_BACKGROUND_COLOR_DEFAULT) }
@@ -128,9 +130,9 @@ pub fn video_card(scene: &mut Scene, fonts: &mut Fonts, media: &mut Media, descr
     let Some(strip) = strip else { return }; let (play, track) = video_strip(strip, s);
     scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &RoundedRect::from_rect(strip, 6.0 * s));
     if let Some(i) = fonts.icon(if playing { "pause" } else { "play" }, (15.0 * s) as f32, text()) { draw_layout(scene, &i, Affine::translate((play.center().x - i.width() as f64 / 2.0, play.center().y - i.height() as f64 / 2.0))); }
-    let t = fonts.layout(&crate::video::timecode(at, fps), Family::Sans, (12.0 * s) as f32, 400.0, dim()); draw_layout(scene, &t, Affine::translate((play.x1 + 2.0 * s, strip.center().y - t.height() as f64 / 2.0)));
+    let t = fonts.layout(&crate::video::timecode(at, fps), Family::Mono, (12.0 * s) as f32, 400.0, c(t::NEUTRAL_CONTENT_COLOR_DEFAULT)); draw_layout(scene, &t, Affine::translate((play.x1 + 2.0 * s, strip.center().y - t.height() as f64 / 2.0)));
     if track.width() > 8.0 * s { let x = track.x0 + track.width() * (at.clamp(0, frames - 1) as f64 / (frames - 1).max(1) as f64);
-        fill(scene, track, line()); fill(scene, Rect::new(track.x0, track.y0, x, track.y1), accent());
+        fill(scene, track, strip_line()); fill(scene, Rect::new(track.x0, track.y0, x, track.y1), accent());
         for n in notes.iter() { let nx = track.x0 + track.width() * (n.frame.clamp(0, frames - 1) as f64 / (frames - 1).max(1) as f64); fill(scene, Rect::new(nx - s, strip.center().y - 5.0 * s, nx + s, strip.center().y + 5.0 * s), note_mark(n.addressed)); }
         scene.fill(Fill::NonZero, Affine::IDENTITY, text(), None, &RoundedRect::from_rect(Rect::new(x - 1.5 * s, strip.center().y - 7.0 * s, x + 1.5 * s, strip.center().y + 7.0 * s), 1.5 * s)); }
     // the selected card's notes: their small pictures in a row under the strip (a click goes to a note's frame)
@@ -222,9 +224,9 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                     let (at, playing) = match me { Some(m) => (m.frame as i64, m.playing), None => (rec.get("frame").and_then(|f| f.as_i64()).unwrap_or(0), false) };
                     let strip = Rect::new(whole.x0, r.y1, whole.x1, r.y1 + mn_layout::VIDEO_STRIP as f64 * s); let (play, track) = video_strip(strip, s);
                     if let Some(i) = fonts.icon(if playing { "pause" } else { "play" }, (15.0 * s) as f32, text()) { draw_layout(scene, &i, Affine::translate((play.center().x - i.width() as f64 / 2.0, play.center().y - i.height() as f64 / 2.0))); }
-                    let t = fonts.layout(&crate::video::timecode(at, fps), Family::Sans, (12.0 * s) as f32, 400.0, dim()); draw_layout(scene, &t, Affine::translate((play.x1 + 2.0 * s, strip.center().y - t.height() as f64 / 2.0)));
+                    let t = fonts.layout(&crate::video::timecode(at, fps), Family::Mono, (12.0 * s) as f32, 400.0, c(t::NEUTRAL_CONTENT_COLOR_DEFAULT)); draw_layout(scene, &t, Affine::translate((play.x1 + 2.0 * s, strip.center().y - t.height() as f64 / 2.0)));
                     if track.width() > 8.0 * s { let x = track.x0 + track.width() * (at.clamp(0, frames - 1) as f64 / (frames - 1).max(1) as f64);
-                        fill(scene, track, line()); fill(scene, Rect::new(track.x0, track.y0, x, track.y1), accent());
+                        fill(scene, track, strip_line()); fill(scene, Rect::new(track.x0, track.y0, x, track.y1), accent());
                         // a tick for every note of the clip
                         for n in notes.iter() { let nx = track.x0 + track.width() * (n.frame.clamp(0, frames - 1) as f64 / (frames - 1).max(1) as f64); fill(scene, Rect::new(nx - s, strip.center().y - 5.0 * s, nx + s, strip.center().y + 5.0 * s), note_mark(n.addressed)); }
                         scene.fill(Fill::NonZero, Affine::IDENTITY, text(), None, &RoundedRect::from_rect(Rect::new(x - 1.5 * s, strip.center().y - 7.0 * s, x + 1.5 * s, strip.center().y + 7.0 * s), 1.5 * s)); }
