@@ -77,6 +77,44 @@ full size and 281 at 1920 wide on the GPU, 7 on the CPU; a single frame through 
    the user states that they act "as entrepreneur and not as consumer"; it may not be passed on, so each user installs
    their own; nothing forbids another program starting it, and its manual describes scripted and batch use.
 
+## Later the same day: ProRes segments in place of EXR frames
+
+Asked by the owner as a devil's advocate ("EXR is just such a beast"; and of the renderer's start, about 0.2 s: "might
+be a blocker"). The renderer writes no light single-frame format - no JPEG 2000, DPX or PNG; its outputs are EXR and
+TIFF without compression, ProRes in MXF, and HDE - and ProRes does not pass through a pipe, so the light route is short
+ProRes FILES. `spikes/s23-artcmd-frames/segments.py` is a dummy playback of that: one renderer at a time writes segment
+after segment (LogC4) ahead of a playhead at the clip's rate; a segment counts when the renderer has ended. Same clip,
+same Mac, 30 s each.
+
+| Run | Frames ready on time | First picture | Starts | Written |
+|---|---|---|---|---|
+| Proxy, 1920 wide: 6 frames first, then 24, 72 ahead | 718 of 720 (worst 59 ms late) | 217 ms | 36 | 65 MB/s |
+| Proxy, 1920 wide: 6, then 48, 96 ahead | 717 of 720 (worst 107 ms) | 197 ms | 21 | 40 MB/s |
+| Proxy, 1920 wide: 12, then 96, 192 ahead | 719 of 720 (worst 44 ms) | 223 ms | 12 | 25 MB/s |
+| ProRes 422, full size: 6, then 48, 96 ahead | 705 of 720 (worst 602 ms) | 308 ms | 21 | 127 MB/s |
+| ProRes 4444, full size: 6, then 48, 96 ahead | 701 of 720 (worst 763 ms) | 314 ms | 21 | 259 MB/s |
+
+One segment alone, the time to write it against the time it plays: Proxy at 1920 wide 1.2 times faster at 6 frames,
+3.3 at 24, 5.8 at 48, 8.1 at 96; ProRes 422 at full size 0.9, 2.0, 2.5, 2.8; ProRes 4444 at full size 0.8, 1.7, 2.0,
+2.2. A jump to a far frame: one frame 201 ms (median of 6), six frames 230 ms as Proxy and 317 ms as 4444 at full size.
+
+What it shows:
+
+- **The start is not what limits playback.** It is paid once a segment, and a segment of a second or more is written
+  several times faster than it plays. It is what a jump costs: about 0.2 s before anything else.
+- **Every file carries about 50 MB that is not picture** (a ONE-frame Proxy segment is 50 MB; 96 frames are 63 MB), so
+  short segments write far more than their pictures weigh. Not looked into what the 50 MB are.
+- **Full size is in reach as ProRes** (2 to 2.8 times the clip's rate once segments are long), where EXR was not; the
+  late frames above sit where a 6-frame segment is followed by a 48-frame one - a ramp of lengths was not tried.
+- **The family's FFmpeg reads a segment**: ProRes, two mono sound tracks, a data track; it warns once ("could not
+  resolve file descriptor strong ref") and decodes all frames. So the sound comes with the picture.
+- **A file can be read while it is being written**: 1.5 s into a long render (571 MB written, the renderer still
+  running) ffprobe counted 79 packets. One long render read behind its writer may need no segments at all. Seen once,
+  with the probe only.
+
+Not seen here: segments joined in a player, with sound, without a seam; the same on Windows; what the renderer does when
+its output file is deleted under it; a second version of the renderer.
+
 ## Not seen
 
 - The real `ImageSequenceCache` (the harness only asks in its order), a frame on screen, the renderer and the player
