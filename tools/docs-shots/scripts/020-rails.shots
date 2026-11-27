@@ -33,5 +33,8 @@ set safety/guide
 # qcv3_006: compact mode
 menu Compact
 wait 1.2
+# the pointer over the picture: the glass bar shows (row 617)
+move 720 450
+wait 0.6
 shot qcv3_006
 quit
