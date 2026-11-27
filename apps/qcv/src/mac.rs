@@ -25,3 +25,24 @@ pub fn activate() {
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
 }
+/// Compact mode's window (canon row 617): the system's own titled window with its title bar made part of the picture - the
+/// content under a transparent bar, no title, no buttons - so the window keeps the system's round corners, edge line,
+/// shadow and resizing, which a window without decorations loses. `on` false gives the title bar back. Changes only
+/// what differs, so it can be asked again after the system has had the window (leaving full screen).
+pub fn compact_chrome(window: &dyn winit31::window::Window, on: bool) {
+    use objc2::{msg_send, runtime::AnyObject};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(h) = window.window_handle() else { return };
+    let RawWindowHandle::AppKit(h) = h.as_raw() else { return };
+    const FULL_SIZE_CONTENT_VIEW: usize = 1 << 15;
+    unsafe {
+        let view = h.ns_view.as_ptr() as *mut AnyObject;
+        let win: *mut AnyObject = msg_send![view, window]; if win.is_null() { return }
+        let mask: usize = msg_send![win, styleMask];
+        let want = if on { mask | FULL_SIZE_CONTENT_VIEW } else { mask & !FULL_SIZE_CONTENT_VIEW };
+        if want != mask { let _: () = msg_send![win, setStyleMask: want]; }
+        let clear: bool = msg_send![win, titlebarAppearsTransparent];
+        if clear != on { let _: () = msg_send![win, setTitlebarAppearsTransparent: on]; let _: () = msg_send![win, setTitleVisibility: if on { 1isize } else { 0isize }]; }
+        for b in 0..3usize { let btn: *mut AnyObject = msg_send![win, standardWindowButton: b]; if !btn.is_null() { let hidden: bool = msg_send![btn, isHidden]; if hidden != on { let _: () = msg_send![btn, setHidden: on]; } } }
+    }
+}

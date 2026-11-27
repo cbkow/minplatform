@@ -2019,7 +2019,9 @@ impl App {
         if self.gpu.as_ref().is_some_and(|g| g.fullscreen) { self.toggle_fullscreen(); }
         let Some(g) = self.gpu.as_mut() else { return };
         g.compact = !g.compact;
-        g.window.set_decorations(!g.compact);
+        // macOS keeps the system's window (round corners, edge line, shadow, resizing) with its title bar folded into the picture; elsewhere the frame goes
+        #[cfg(target_os = "macos")] mac::compact_chrome(&**g.window, g.compact);
+        #[cfg(not(target_os = "macos"))] g.window.set_decorations(!g.compact);
         g.content_set = None; g.ui_dirty = true;
         if g.compact { g.strip.close(); g.settings_panel.blur(&mut self.settings); }
         let s = g.window.surface_size(); let sc = g.window.scale_factor();
@@ -2498,7 +2500,7 @@ impl ApplicationHandler for App {
                 for c in pending { self.apply_setting(c); } for c in pending_pp { self.project_cmd(c); }
             }
             WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.dual_dialog.open { g.dual_dialog.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.stream_dialog.open { g.stream_dialog.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.notes.has_focus() { g.notes.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.guides_panel.has_focus() { g.guides_panel.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.clip_popover.is_open() { g.clip_popover.ime(&e, &mut g.fonts); } else if g.drawer.is_typing() { g.drawer.ime(&e, &mut g.fonts); } else if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.output_panel.has_focus() { g.output_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else if g.shortcuts.has_focus() { g.shortcuts.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
-            WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_ui_scale(sc as f32); g.content_set = None; g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
+            WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { #[cfg(target_os = "macos")] if g.compact && g.window.fullscreen().is_none() { mac::compact_chrome(&**g.window, true); }   /* the system may give the bar back on leaving full screen */ g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_ui_scale(sc as f32); g.content_set = None; g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
