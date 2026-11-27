@@ -1,6 +1,6 @@
 # minplatform — working notes for Claude
 
-- **State (2026-11-26): QCView 3.0.6 is RELEASED on macOS and SUBMITTED to the Store by the owner (tag `v3.0.6`: 3.0.5, released the same
+- **State (2026-11-26, evening): QCView 3.0.7 is RELEASED on macOS and PACKED for the Store (tag `v3.0.7`, row 617: compact mode's controls are a glass bar over the picture, the timecode stays on a plate while the bar is away, `apps/qcv/src/compact_strip.rs`; on macOS the compact window is the system's titled window with its title bar folded in, `mac::compact_chrome`; on Windows it has the system's shadow and is resized from its own edges).** Earlier that day: QCView 3.0.6 was RELEASED on macOS and SUBMITTED to the Store by the owner (tag `v3.0.6`: 3.0.5, released the same
   day on macOS only, plus the Quick Look panel at full size - `preferredContentSize` is in points; rows 604-616, tag `v3.0.5`: a Quick Look
   preview and thumbnails for EXR and MXF - `apps/qcv-quicklook`, two sandboxed extensions in the bundle's `PlugIns`, read
   `docs/spikes/S20-quicklook.md`, `S21`, `S22` and `packaging/macos/make-quicklook.sh` before touching them; macOS keeps MOV
