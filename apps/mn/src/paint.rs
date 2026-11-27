@@ -282,7 +282,8 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                         let band = if under { Rect::new(r.x0, r.y1 + mn_layout::VIDEO_STRIP as f64 * s, r.x1, r.y1 + (mn_layout::VIDEO_STRIP + mn_layout::VIDEO_CAPTION) as f64 * s) } else { Rect::new(r.x0, r.y1 - 26.0 * s, r.x1, r.y1) };
                         if under || band.y0 > r.y0 {
                             let (ink_c, dim_c) = if under { (text(), text().multiply_alpha(0.6)) } else { (Color::WHITE, Color::WHITE.multiply_alpha(0.75)) };
-                            fill(scene, band, if under { c(t::BACKGROUND_LAYER_1_COLOR) } else { Color::BLACK.multiply_alpha(0.62) });
+                            // (under the strip: the strip's own plate, rounded as it is - the owner 2026-11-26; over a picture's foot: a dark band)
+                            if under { fill(scene, band, c(t::BACKGROUND_LAYER_1_COLOR)); scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &RoundedRect::from_rect(Rect::new(band.x0, band.y0 + 2.0 * s, band.x1, band.y1 - 2.0 * s), 6.0 * s)); } else { fill(scene, band, Color::BLACK.multiply_alpha(0.62)); }
                             let line_y = if under { band.y0 + 13.0 * s } else { band.center().y };
                             let mut x = band.x0 + 10.0 * s;
                             if *done { if let Some(ic) = fonts.icon("check", (12.0 * s) as f32, ink_c) { draw_layout(scene, &ic, Affine::translate((x, line_y - ic.height() as f64 / 2.0))); x += ic.width() as f64 + 6.0 * s; } }
