@@ -1446,13 +1446,17 @@ impl App {
         }
         if g.compact {
             // Windows: a window without its frame has no edges to pull (the client area covers them), so compact mode's
-            // edges are ours - six points in from each side, the system's resize begun from there (row 617)
+            // edges are ours, the system's resize begun from there (row 617)
             #[cfg(target_os = "windows")]
             if matches!(e, min_ui::Event::Down { button: min_ui::Button::Primary, .. }) || (matches!(e, min_ui::Event::Move { .. }) && !g.scrubber.is_pressed() && self.move_arm.is_none() && !g.compact_strip.pressed()) {
                 use winit::window::ResizeDirection as D; use winit::cursor::CursorIcon as C;
-                let sz = g.window.surface_size(); let (w, h, m) = (sz.width as f64, sz.height as f64, 6.0 * scale);
-                let dir = e.pos().and_then(|(x, y)| match (x < m, x >= w - m, y < m, y >= h - m) { (true, _, true, _) => Some((D::NorthWest, C::NwseResize)), (_, true, true, _) => Some((D::NorthEast, C::NeswResize)), (true, _, _, true) => Some((D::SouthWest, C::NeswResize)), (_, true, _, true) => Some((D::SouthEast, C::NwseResize)), (true, ..) => Some((D::West, C::EwResize)), (_, true, ..) => Some((D::East, C::EwResize)), (_, _, true, _) => Some((D::North, C::NsResize)), (_, _, _, true) => Some((D::South, C::NsResize)), _ => None });
-                if let Some((x, y)) = e.pos() { if matches!(e, min_ui::Event::Down { .. }) || y < 16.0 * scale || y >= h - 16.0 * scale { let (uw, uh) = g.ui.as_ref().map(|u| u.size()).unwrap_or((0, 0)); log::info!("compact edge probe: {} at {x:.0},{y:.0}; surface {w:.0}x{h:.0}, ui {uw}x{uh}, outer {:?}, scale {scale}, edge {:?}", if matches!(e, min_ui::Event::Down { .. }) { "down" } else { "move" }, g.window.outer_size(), dir.map(|d| d.0)); } }
+                // eight points in from a side; a corner reaches sixteen along each of its sides (a square window has no round corner to aim at)
+                let sz = g.window.surface_size(); let (w, h, m, cm) = (sz.width as f64, sz.height as f64, 8.0 * scale, 16.0 * scale);
+                let dir = e.pos().and_then(|(x, y)| {
+                    let (l, r, t, b) = (x < m, x >= w - m, y < m, y >= h - m); if !(l || r || t || b) { return None }
+                    let (cl, cr, ct, cb) = (x < cm, x >= w - cm, y < cm, y >= h - cm);
+                    Some(match (cl, cr, ct, cb) { (true, _, true, _) => (D::NorthWest, C::NwseResize), (_, true, true, _) => (D::NorthEast, C::NeswResize), (true, _, _, true) => (D::SouthWest, C::NeswResize), (_, true, _, true) => (D::SouthEast, C::NwseResize), _ => if l { (D::West, C::EwResize) } else if r { (D::East, C::EwResize) } else if t { (D::North, C::NsResize) } else { (D::South, C::NsResize) } })
+                });
                 if let Some((d, c)) = dir {
                     if g.cursor != c { g.cursor = c; g.window.set_cursor(winit::cursor::Cursor::Icon(c)); }
                     if matches!(e, min_ui::Event::Down { .. }) { if let Err(err) = g.window.drag_resize_window(d) { log::warn!("window resize: {err}"); } }
