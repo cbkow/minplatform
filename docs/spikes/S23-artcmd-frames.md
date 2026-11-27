@@ -10,8 +10,7 @@ Windows, a clip read cold from shared storage, anything longer than 253 frames.*
 ## Why
 
 The owner (2026-11-27) wants camera-original ARRI clips reviewed in QCView. Clips are many minutes long and come in
-many takes, so converting each before it can be watched does not suit a review player. The vendor's SDK is behind a
-partner agreement. ARRI gives away a command-line renderer, `art-cmd` (ARRI Reference Tool CMD 1.1.1), which the user
+many takes, so converting each before it can be watched does not suit a review player. ARRI gives away a command-line renderer, `art-cmd` (ARRI Reference Tool CMD 1.1.1), which the user
 installs themselves and whose manual describes rendering a range of a clip (`--start`, `--duration`) to EXR frames.
 QCView already plays EXR sequences through a read-ahead cache that never holds more than a window round the playhead
 (`qcv-player`'s `ImageSequenceCache`: 72 frames ahead, 12 behind, the playhead's frame first). Seen by hand the same
