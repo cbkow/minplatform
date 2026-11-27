@@ -140,8 +140,8 @@ pub fn video_card(scene: &mut Scene, fonts: &mut Fonts, media: &mut Media, descr
     }
     let Some(strip) = strip else { return }; let (play, track) = video_strip(strip, s, video_reserve(false, me.as_ref(), true, s));
     scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &RoundedRect::from_rect(strip, 6.0 * s));
-    if let Some(i) = fonts.icon(if playing { "pause" } else { "play" }, (15.0 * s) as f32, text()) { draw_layout(scene, &i, Affine::translate((play.center().x - i.width() as f64 / 2.0, play.center().y - i.height() as f64 / 2.0))); }
-    let t = fonts.layout(&crate::video::timecode(at, fps), Family::Mono, (12.0 * s) as f32, 400.0, c(t::NEUTRAL_CONTENT_COLOR_DEFAULT)); draw_layout(scene, &t, Affine::translate((play.x1 + 2.0 * s, strip.center().y - t.height() as f64 / 2.0)));
+    strip_buttons(scene, fonts, strip, play, playing, s);
+    let t = fonts.layout(&crate::video::timecode(at, fps), Family::Mono, (12.0 * s) as f32, 400.0, c(t::NEUTRAL_CONTENT_COLOR_DEFAULT)); draw_layout(scene, &t, Affine::translate((strip.x0 + 86.0 * s, strip.center().y - t.height() as f64 / 2.0)));
     if track.width() > 8.0 * s { let x = track.x0 + track.width() * (at.clamp(0, frames - 1) as f64 / (frames - 1).max(1) as f64);
         fill(scene, track, strip_line()); fill(scene, Rect::new(track.x0, track.y0, x, track.y1), accent());
         for n in notes.iter() { let nx = track.x0 + track.width() * (n.frame.clamp(0, frames - 1) as f64 / (frames - 1).max(1) as f64); fill(scene, Rect::new(nx - s, strip.center().y - 5.0 * s, nx + s, strip.center().y + 5.0 * s), note_mark(n.addressed)); }
@@ -159,10 +159,19 @@ pub fn video_card(scene: &mut Scene, fonts: &mut Fonts, media: &mut Media, descr
 }
 /// The parts of a video block's strip: the play button's box and the line to scrub on (the counter sits between).
 pub fn video_strip(strip: Rect, s: f64, reserve: f64) -> (Rect, Rect) {
-    let play = Rect::new(strip.x0, strip.y0, strip.x0 + 34.0 * s, strip.y1); let x0 = strip.x0 + 34.0 * s + 96.0 * s;
+    // rewind, play, fast-forward (28 px each; `video_shuttle` has the outer two), the counter, then the line
+    let play = Rect::new(strip.x0 + 28.0 * s, strip.y0, strip.x0 + 56.0 * s, strip.y1); let x0 = strip.x0 + 84.0 * s + 94.0 * s;
     // the right end is kept for the eye and the speed, mute and loop readouts, when there are any (`video_reserve`)
     let x1 = strip.x1 - reserve;
     (play, Rect::new(x0.min(x1), strip.center().y - s, x1.max(x0.min(x1)), strip.center().y + s))
+}
+/// The strip's rewind and fast-forward boxes, either side of play: held, they run the clip back and on (QCView's hold
+/// buttons, J and L; canon row 618).
+pub fn video_shuttle(strip: Rect, s: f64) -> (Rect, Rect) { (Rect::new(strip.x0, strip.y0, strip.x0 + 28.0 * s, strip.y1), Rect::new(strip.x0 + 56.0 * s, strip.y0, strip.x0 + 84.0 * s, strip.y1)) }
+/// The three buttons drawn: rewind, play or pause, fast-forward.
+fn strip_buttons(scene: &mut Scene, fonts: &mut Fonts, strip: Rect, play: Rect, playing: bool, s: f64) {
+    let (rw, ff) = video_shuttle(strip, s);
+    for (r, icon, px) in [(rw, "rewind", 14.0), (play, if playing { "pause" } else { "play" }, 15.0), (ff, "fast-forward", 14.0)] { if let Some(i) = fonts.icon(icon, (px * s) as f32, text()) { draw_layout(scene, &i, Affine::translate((r.center().x - i.width() as f64 / 2.0, r.center().y - i.height() as f64 / 2.0))); } }
 }
 
 /// A long path keeps its two ends (the file's name is at the far one).
@@ -234,8 +243,8 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                     let (frames, fps) = (rec.get("frames").and_then(|f| f.as_i64()).unwrap_or(1).max(1), rec.get("fps").and_then(|f| f.as_f64()).unwrap_or(24.0));
                     let (at, playing) = match me { Some(m) => (m.frame as i64, m.playing), None => (rec.get("frame").and_then(|f| f.as_i64()).unwrap_or(0), false) };
                     let strip = Rect::new(whole.x0, r.y1, whole.x1, r.y1 + mn_layout::VIDEO_STRIP as f64 * s); let reserve = video_reserve(!notes.is_empty(), me.as_ref(), false, s); let (play, track) = video_strip(strip, s, reserve);
-                    if let Some(i) = fonts.icon(if playing { "pause" } else { "play" }, (15.0 * s) as f32, text()) { draw_layout(scene, &i, Affine::translate((play.center().x - i.width() as f64 / 2.0, play.center().y - i.height() as f64 / 2.0))); }
-                    let t = fonts.layout(&crate::video::timecode(at, fps), Family::Mono, (12.0 * s) as f32, 400.0, c(t::NEUTRAL_CONTENT_COLOR_DEFAULT)); draw_layout(scene, &t, Affine::translate((play.x1 + 2.0 * s, strip.center().y - t.height() as f64 / 2.0)));
+                    strip_buttons(scene, fonts, strip, play, playing, s);
+                    let t = fonts.layout(&crate::video::timecode(at, fps), Family::Mono, (12.0 * s) as f32, 400.0, c(t::NEUTRAL_CONTENT_COLOR_DEFAULT)); draw_layout(scene, &t, Affine::translate((strip.x0 + 86.0 * s, strip.center().y - t.height() as f64 / 2.0)));
                     if track.width() > 8.0 * s { let x = track.x0 + track.width() * (at.clamp(0, frames - 1) as f64 / (frames - 1).max(1) as f64);
                         fill(scene, track, strip_line()); fill(scene, Rect::new(track.x0, track.y0, x, track.y1), accent());
                         // a tick for every note of the clip

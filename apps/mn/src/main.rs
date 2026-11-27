@@ -169,7 +169,8 @@ struct Resize { id: BlockId, before: String, from_x: f64, width: f64, max: f64, 
 /// The ONE video that plays (rows 287, 316): its block, the family's player open on its file, whether its line is being
 /// dragged, whether a frame of it has reached the presenter (until then its poster stays), and until when frames are
 /// drawn although it does not play (a seek's picture arrives a little after it was asked).
-struct Player { id: BlockId, t: qcv_player::Transport, scrub: bool, shown: bool, awake: Instant, /// the clip's notes as they are drawn on and written (QCView's own code, `qcv-annotate`; row 316, stage 4b)
+struct Player { id: BlockId, t: qcv_player::Transport, /// a strip's rewind or fast-forward is held
+    held: bool, scrub: bool, shown: bool, awake: Instant, /// the clip's notes as they are drawn on and written (QCView's own code, `qcv-annotate`; row 316, stage 4b)
     ann: qcv_annotate::Annotations, path: std::path::PathBuf }
 /// Text selected on a PDF's page (row 315): the block, and the first and last characters (places in the page's list).
 /// A file being read into a note (row 335): the reader's answer, and the file.
@@ -2128,6 +2129,7 @@ impl App {
                     self.video_seek(id, notes[i].frame as i32); if again { self.files.thumb_click = None; self.note_words(); } }
                 return true } }
         if let Some((id, _, strip, _)) = self.video_current().and_then(|id| self.video_boxes(id)) { if strip.contains(pt) { let (_, track) = paint::video_strip(strip, s, self.video_reserve(id, s));
+            let (rw, ff) = paint::video_shuttle(strip, s); if rw.contains(pt) || ff.contains(pt) { self.video_shuttle(id, if rw.contains(pt) { -1 } else { 1 }); return true }
             if track.inflate(4.0 * s, 12.0 * s).contains(pt) { if self.video_start(id, false) { if let Some(p) = self.player.as_mut() { p.t.begin_scrub(); p.scrub = true; } self.video_scrub(x); } } else { self.video_toggle(id); }
             return true } }
         let Some((id, tool, pen, pen_w)) = self.files.canvas.as_ref().and_then(|cv| Some((cv.inked?, cv.tool?, cv.pen, cv.pen_w))) else { return false };
@@ -2180,7 +2182,7 @@ impl App {
                 let mut ann = qcv_annotate::Annotations::new(); ann.load(Some(&path));
                 ann.active = self.files.tool.is_some(); ann.tool = self.files.tool.unwrap_or(qcv_annotate::Tool::Freehand); ann.color = self.files.pen.unwrap_or([1.0, 0.0, 0.0, 1.0]); ann.width = self.files.pen_w.unwrap_or(6.0);
                 self.media.set_notes(&path, ann.notes.clone());
-                self.player = Some(Player { id, t, scrub: false, shown: false, awake: Instant::now() + std::time::Duration::from_millis(800), ann, path });
+                self.player = Some(Player { id, t, held: false, scrub: false, shown: false, awake: Instant::now() + std::time::Duration::from_millis(800), ann, path });
                 g.window.request_redraw(); true
             }
             Err(e) => { self.notice = Some((format!("The video could not be opened \u{2014} {e}"), until)); false }
@@ -2241,6 +2243,21 @@ impl App {
             save_player_settings((p.t.loop_enabled(), p.t.review_speed(), p.t.audio.volume(), p.t.audio.is_muted()));
             if !p.t.is_playing() && matches!(a, A::Step(_) | A::SeekToStart | A::SeekToEnd | A::ShuttleEnd) { keep = Some(p.t.current_frame()); } }
         if let Some(f) = keep { self.video_keep(id, f); }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+        true
+    }
+    /// A strip's rewind (-1) or fast-forward (1) is pressed: the block becomes the playing one and runs while the button is held.
+    fn video_shuttle(&mut self, id: BlockId, dir: i32) {
+        if !self.video_start(id, false) { return }
+        if let Some(p) = self.player.as_mut() { let now = Instant::now(); p.t.apply(qcv_player::Action::ShuttleBegin(dir), now); p.held = true; p.awake = now + std::time::Duration::from_millis(800); }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The held button is let go: true when there was one.
+    fn video_shuttle_end(&mut self) -> bool {
+        let Some(p) = self.player.as_mut().filter(|p| p.held) else { return false };
+        let now = Instant::now(); p.held = false; p.t.apply(qcv_player::Action::ShuttleEnd, now); p.awake = now + std::time::Duration::from_millis(800);
+        let keep = (!p.t.is_playing()).then(|| (p.id, p.t.current_frame()));
+        if let Some((id, f)) = keep { self.video_keep(id, f); }
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
         true
     }
@@ -4047,6 +4064,7 @@ impl ApplicationHandler for App {
                 if state == ElementState::Pressed && !self.pressed { if let Some(c) = &self.files.card { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); if !Rect::new(c.rect.x0 - 40.0 * s, c.rect.y0, c.rect.x1, c.rect.y1).contains(kurbo::Point::new(position.x, position.y)) && !self.files.find.as_ref().is_some_and(|f| f.hit(position.x, position.y)) && self.files.link.is_none() && self.files.picker.is_none() { self.card_leave(); } } }
                 if self.files.canvas.is_some() && self.files.card.is_none() && !self.modal() && !self.ctx.is_open() {
                     if state == ElementState::Released && std::mem::take(&mut self.files.drawing) { if let Some((geo, cur)) = self.video_geo() { let c = self.player.as_mut().and_then(|p| p.ann.release(geo.to_norm(position.x, position.y), &cur, &geo)); if let Some(c) = c { self.annotated(c); } } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+                    if state == ElementState::Released && self.video_shuttle_end() { return }
                     if state == ElementState::Released && self.player.as_ref().is_some_and(|p| p.scrub) { let mut keep = None; if let Some(p) = self.player.as_mut() { p.t.end_scrub(); p.scrub = false; p.awake = Instant::now() + std::time::Duration::from_millis(800); if !p.t.is_playing() { keep = Some((p.id, p.t.current_frame())); } } if let Some((id, f)) = keep { self.video_keep(id, f); } return }
                     // a note's words being typed on a card: a press in the field is the field's; one anywhere else keeps the words and goes on
                     if self.files.note_field.is_some() { let inside = self.files.note_field.as_ref().is_some_and(|(_, _, f)| f.hit(position.x, position.y));
@@ -4093,10 +4111,12 @@ impl ApplicationHandler for App {
                 // a drawing on a video's frame ends with the release
                 if state == ElementState::Released && std::mem::take(&mut self.files.drawing) { if let Some((geo, cur)) = self.video_geo() { let c = self.player.as_mut().and_then(|p| p.ann.release(geo.to_norm(position.x, position.y), &cur, &geo)); if let Some(c) = c { self.annotated(c); } } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                 // a video block (row 316): a click on its picture or its play button plays / pauses; its line is dragged to scrub
-                if state == ElementState::Released && self.player.as_ref().is_some_and(|p| p.scrub) { let mut keep = None; if let Some(p) = self.player.as_mut() { p.t.end_scrub(); p.scrub = false; p.awake = Instant::now() + std::time::Duration::from_millis(800); if !p.t.is_playing() { keep = Some((p.id, p.t.current_frame())); } } if let Some((id, f)) = keep { self.video_keep(id, f); } return }
+                if state == ElementState::Released && self.video_shuttle_end() { return }
+                    if state == ElementState::Released && self.player.as_ref().is_some_and(|p| p.scrub) { let mut keep = None; if let Some(p) = self.player.as_mut() { p.t.end_scrub(); p.scrub = false; p.awake = Instant::now() + std::time::Duration::from_millis(800); if !p.t.is_playing() { keep = Some((p.id, p.t.current_frame())); } } if let Some((id, f)) = keep { self.video_keep(id, f); } return }
                 if state == ElementState::Pressed { if let Some((id, pic, strip, _)) = self.video_under(position.x, position.y) {
                     let (nx, ny) = self.note_point(self.pointer); if let Some(l) = self.layout.as_ref() { self.ed.point(l, nx, ny, false); }
                     let pt = kurbo::Point::new(position.x, position.y); let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let (_, track) = paint::video_strip(strip, s, self.video_reserve(id, s));
+                    { let (rw, ff) = paint::video_shuttle(strip, s); if rw.contains(pt) || ff.contains(pt) { self.video_shuttle(id, if rw.contains(pt) { -1 } else { 1 }); return } }
                     // a drawing tool is armed: the press draws on the frame (the video pauses for it, and becomes the playing one first)
                     if pic.contains(pt) && self.files.tool.is_some() {
                         if !self.video_start(id, false) { return }

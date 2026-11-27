@@ -170,7 +170,7 @@ impl Canvas {
     /// Where a video card can play: its picture's place, while it is in view and not seen from far out.
     pub fn video_place(&self, id: BlockId) -> Option<Rect> { let (r, _) = self.video_el(id)?; (self.cam.2 >= FAR && r.width() >= 28.0 * self.scale && r.intersect(self.rect).area() > 0.0).then_some(r) }
     /// The strip under a video card (play, the frame, the line to scrub on): shown while the card is the one selected.
-    pub fn video_strip(&self, id: BlockId) -> Option<Rect> { let (r, _) = self.video_el(id)?; let s = self.scale; Some(Rect::new(r.x0, r.y1 + 6.0 * s, r.x1.max(r.x0 + 300.0 * s), r.y1 + 6.0 * s + mn_layout::VIDEO_STRIP as f64 * s)) }
+    pub fn video_strip(&self, id: BlockId) -> Option<Rect> { let (r, _) = self.video_el(id)?; let s = self.scale; Some(Rect::new(r.x0, r.y1 + 6.0 * s, r.x1.max(r.x0 + 206.0 * s), r.y1 + 6.0 * s + mn_layout::VIDEO_STRIP as f64 * s)) }
     pub fn selected_video(&self) -> Option<BlockId> { if self.edit.is_some() { return None } self.selected_media("video").map(|e| e.id) }
     /// The frame a video card stands on goes into its record (not a step of the history).
     /// A card's record is replaced (its drawings, made in the large view: rows 362, 367). `step`: as one step of the
