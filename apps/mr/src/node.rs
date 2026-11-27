@@ -741,6 +741,10 @@ impl Node {
             if lines.len() >= 50 || flushed.elapsed() > Duration::from_secs(5) { flush(&mut lines); flushed = Instant::now(); }
             if sent.elapsed() > Duration::from_secs(2) { sent = Instant::now(); if !send_frames(&mut frames) { log("the leader calls this render stale: abandoned"); self.cut(None, Cut::Abandon); } }
             if limit.is_some_and(|l| started.elapsed() > l) { log("the chunk ran past its time: killed"); self.cut(None, Cut::Fail); }
+            // the node is ending (an exit, or a new start asked for by its window or by another node - row 619): the render
+            // is killed now. Without this the node left the farm and went on rendering to the chunk's end, and the copy
+            // that was to take over gave up waiting for it.
+            if self.stop.load(Ordering::Relaxed) && self.work.lock().unwrap().running.as_ref().is_some_and(|r| r.cut.is_none()) { log("the node is ending: the render is killed"); self.cut(None, Cut::Fail); }
         }
         let status = child.wait().ok(); flush(&mut lines);
         // the leash itself was killed (nothing told it to): its tree is this process's to kill
