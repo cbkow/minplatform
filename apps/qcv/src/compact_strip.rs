@@ -112,6 +112,8 @@ impl CompactStrip {
         let consumed = !cmds.is_empty() || (shown && over(self.rect) && !over(self.scrub_rect));
         (cmds, dirty, consumed)
     }
+    /// A button of the bar is held.
+    #[allow(dead_code)] pub fn pressed(&self) -> bool { [&self.rew, &self.play, &self.ff, &self.pin, &self.exit].iter().any(|b| b.is_pressed()) }
     pub fn tick(&mut self, now: Instant) -> bool { self.bar.animating(now) || self.tooltips.tick(now) || self.rew.animating(now) || self.ff.animating(now) || self.play.animating(now) || self.pin.animating(now) || self.exit.animating(now) }
     /// The bar with everything on it, at its present strength; `scrub` paints the scrubber's line into it. Under it,
     /// while it is away, the timecode on its plate.
