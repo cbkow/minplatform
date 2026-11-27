@@ -54,7 +54,18 @@ pub struct Live { pub id: BlockId, pub frame: i32, pub playing: bool, pub shown:
 /// A note's colour on a video's line and its small picture (one colour for "a note" in the family; grey once addressed).
 fn note_mark(addressed: bool) -> Color { if addressed { dim() } else { Color::from_rgba8(0xb4, 0x8e, 0xf0, 0xff) } }
 /// The eye on a video's strip that hides the notes' drawings and captions (shown for clips with notes).
-pub fn video_eye(strip: Rect, s: f64) -> Rect { let x = strip.x1 - 12.0 * s - 96.0 * s + 6.0 * s; Rect::new(x, strip.y0, x + 22.0 * s, strip.y1) }
+pub fn video_eye(strip: Rect, s: f64, reserve: f64) -> Rect { let x = strip.x1 - reserve + 6.0 * s; Rect::new(x, strip.y0, x + 22.0 * s, strip.y1) }
+/// What a video's strip keeps free at its right end (px): the padding, the eye of a clip with notes, and room for the
+/// readouts of what is not as usual in the block that plays (not looping, muted, a speed other than 1) - no more, so the
+/// line runs to the strip's end when there is nothing to say (it stopped 108 px short always: the owner, 2026-11-26).
+/// A canvas card's strip has the mute alone.
+pub fn video_reserve(notes: bool, live: Option<&Live>, canvas: bool, s: f64) -> f64 {
+    let mut w = 12.0;
+    if canvas { if live.is_some_and(|m| m.muted) { w += 23.0; } return w * s }
+    if notes { w += 28.0; }
+    if let Some(m) = live { let r = if m.looping { 0.0 } else { 19.0 } + if m.muted { 19.0 } else { 0.0 } + if (m.speed - 1.0).abs() > 0.01 { 36.0 } else { 0.0 }; if r > 0.0 { w += r + 4.0; } }
+    w * s
+}
 /// The small pictures of a clip's notes in the row under its strip: each one's box. They run from the left; when they do
 /// not fit, the row is moved so that the note the video stands on (`current`) is in view.
 pub fn note_thumbs(row: Rect, n: usize, aspect: f64, current: Option<usize>, s: f64) -> Vec<Rect> {
@@ -127,7 +138,7 @@ pub fn video_card(scene: &mut Scene, fonts: &mut Fonts, media: &mut Media, descr
                 let k = fonts.layout(&n.timecode, Family::Sans, (11.0 * s) as f32, 500.0, Color::WHITE.multiply_alpha(0.75)); draw_layout(scene, &k, Affine::translate((x, band.center().y - k.height() as f64 / 2.0))); x += k.width() as f64 + 10.0 * s;
                 if band.x1 - x > 40.0 * s { let t = fonts.layout_fit(&words, Family::Sans, (12.0 * s) as f32, 400.0, Color::WHITE, band.x1 - x - 10.0 * s); draw_layout(scene, &t, Affine::translate((x, band.center().y - t.height() as f64 / 2.0))); } } }
     }
-    let Some(strip) = strip else { return }; let (play, track) = video_strip(strip, s);
+    let Some(strip) = strip else { return }; let (play, track) = video_strip(strip, s, video_reserve(false, me.as_ref(), true, s));
     scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &RoundedRect::from_rect(strip, 6.0 * s));
     if let Some(i) = fonts.icon(if playing { "pause" } else { "play" }, (15.0 * s) as f32, text()) { draw_layout(scene, &i, Affine::translate((play.center().x - i.width() as f64 / 2.0, play.center().y - i.height() as f64 / 2.0))); }
     let t = fonts.layout(&crate::video::timecode(at, fps), Family::Mono, (12.0 * s) as f32, 400.0, c(t::NEUTRAL_CONTENT_COLOR_DEFAULT)); draw_layout(scene, &t, Affine::translate((play.x1 + 2.0 * s, strip.center().y - t.height() as f64 / 2.0)));
@@ -147,10 +158,10 @@ pub fn video_card(scene: &mut Scene, fonts: &mut Fonts, media: &mut Media, descr
     if let Some(m) = me.filter(|m| m.muted) { let _ = m; if let Some(i) = fonts.icon("speaker-slash", (13.0 * s) as f32, dim()) { draw_layout(scene, &i, Affine::translate((strip.x1 - 10.0 * s - i.width() as f64, strip.center().y - i.height() as f64 / 2.0))); } }
 }
 /// The parts of a video block's strip: the play button's box and the line to scrub on (the counter sits between).
-pub fn video_strip(strip: Rect, s: f64) -> (Rect, Rect) {
+pub fn video_strip(strip: Rect, s: f64, reserve: f64) -> (Rect, Rect) {
     let play = Rect::new(strip.x0, strip.y0, strip.x0 + 34.0 * s, strip.y1); let x0 = strip.x0 + 34.0 * s + 96.0 * s;
-    // the right end is kept for the speed, mute and loop readouts
-    let x1 = strip.x1 - 12.0 * s - 96.0 * s;
+    // the right end is kept for the eye and the speed, mute and loop readouts, when there are any (`video_reserve`)
+    let x1 = strip.x1 - reserve;
     (play, Rect::new(x0.min(x1), strip.center().y - s, x1.max(x0.min(x1)), strip.center().y + s))
 }
 
@@ -222,7 +233,7 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                 if video {
                     let (frames, fps) = (rec.get("frames").and_then(|f| f.as_i64()).unwrap_or(1).max(1), rec.get("fps").and_then(|f| f.as_f64()).unwrap_or(24.0));
                     let (at, playing) = match me { Some(m) => (m.frame as i64, m.playing), None => (rec.get("frame").and_then(|f| f.as_i64()).unwrap_or(0), false) };
-                    let strip = Rect::new(whole.x0, r.y1, whole.x1, r.y1 + mn_layout::VIDEO_STRIP as f64 * s); let (play, track) = video_strip(strip, s);
+                    let strip = Rect::new(whole.x0, r.y1, whole.x1, r.y1 + mn_layout::VIDEO_STRIP as f64 * s); let reserve = video_reserve(!notes.is_empty(), me.as_ref(), false, s); let (play, track) = video_strip(strip, s, reserve);
                     if let Some(i) = fonts.icon(if playing { "pause" } else { "play" }, (15.0 * s) as f32, text()) { draw_layout(scene, &i, Affine::translate((play.center().x - i.width() as f64 / 2.0, play.center().y - i.height() as f64 / 2.0))); }
                     let t = fonts.layout(&crate::video::timecode(at, fps), Family::Mono, (12.0 * s) as f32, 400.0, c(t::NEUTRAL_CONTENT_COLOR_DEFAULT)); draw_layout(scene, &t, Affine::translate((play.x1 + 2.0 * s, strip.center().y - t.height() as f64 / 2.0)));
                     if track.width() > 8.0 * s { let x = track.x0 + track.width() * (at.clamp(0, frames - 1) as f64 / (frames - 1).max(1) as f64);
@@ -232,7 +243,7 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                         scene.fill(Fill::NonZero, Affine::IDENTITY, text(), None, &RoundedRect::from_rect(Rect::new(x - 1.5 * s, strip.center().y - 7.0 * s, x + 1.5 * s, strip.center().y + 7.0 * s), 1.5 * s)); }
                     if !notes.is_empty() {
                         // the eye: the notes' drawings and captions on the pictures, shown or hidden (every video's)
-                        let e = video_eye(strip, s); if let Some(i) = fonts.icon(if hide_notes { "eye-slash" } else { "eye" }, (14.0 * s) as f32, dim()) { draw_layout(scene, &i, Affine::translate((e.center().x - i.width() as f64 / 2.0, e.center().y - i.height() as f64 / 2.0))); }
+                        let e = video_eye(strip, s, reserve); if let Some(i) = fonts.icon(if hide_notes { "eye-slash" } else { "eye" }, (14.0 * s) as f32, dim()) { draw_layout(scene, &i, Affine::translate((e.center().x - i.width() as f64 / 2.0, e.center().y - i.height() as f64 / 2.0))); }
                         let cur = note_at(&notes, at, fps, playing);
                         // over the picture, on the note's frame: its drawings, and its words along the picture's lower edge
                         if let (Some(i), false) = (cur, hide_notes) { let n = &notes[i]; let exact = n.frame == at;

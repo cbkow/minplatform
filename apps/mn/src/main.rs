@@ -1988,6 +1988,13 @@ impl App {
             }
         }
     }
+    /// What the block's strip keeps free at its right end, as it is drawn (`paint::video_reserve`).
+    fn video_reserve(&mut self, id: BlockId, s: f64) -> f64 {
+        let canvas = self.files.canvas.as_ref().is_some_and(|_| self.files.card.is_none());
+        let d = self.ed.doc.get(id).and_then(|b| match &b.kind { Kind::Media { descriptor } => Some(descriptor.clone()), _ => None }); let notes = !canvas && d.is_some_and(|d| !self.media.notes(&d).is_empty());
+        let live = self.player.as_ref().filter(|p| p.id == id).map(|p| paint::Live { id: p.id, frame: p.t.current_frame(), playing: p.t.is_playing(), shown: p.shown, speed: p.t.review_speed(), muted: p.t.audio.is_muted(), looping: p.t.loop_enabled() });
+        paint::video_reserve(notes, live.as_ref(), canvas, s)
+    }
     /// A video block's boxes in the window: its picture, its strip, and its record.
     fn video_boxes(&self, id: BlockId) -> Option<(BlockId, Rect, Rect, String)> {
         // on a canvas (row 326): a video's card - its picture is the card, its strip lies under it
@@ -2120,7 +2127,7 @@ impl App {
                 if let Some(i) = paint::note_thumbs(inner, notes.len(), aspect, paint::note_at(&notes, at, fps, playing), s).iter().position(|q| q.contains(pt)) { let again = self.files.thumb_click.is_some_and(|(t, b, k)| b == id && k == i && t.elapsed() < std::time::Duration::from_millis(450)); self.files.thumb_click = Some((Instant::now(), id, i));
                     self.video_seek(id, notes[i].frame as i32); if again { self.files.thumb_click = None; self.note_words(); } }
                 return true } }
-        if let Some((id, _, strip, _)) = self.video_current().and_then(|id| self.video_boxes(id)) { if strip.contains(pt) { let (_, track) = paint::video_strip(strip, s);
+        if let Some((id, _, strip, _)) = self.video_current().and_then(|id| self.video_boxes(id)) { if strip.contains(pt) { let (_, track) = paint::video_strip(strip, s, self.video_reserve(id, s));
             if track.inflate(4.0 * s, 12.0 * s).contains(pt) { if self.video_start(id, false) { if let Some(p) = self.player.as_mut() { p.t.begin_scrub(); p.scrub = true; } self.video_scrub(x); } } else { self.video_toggle(id); }
             return true } }
         let Some((id, tool, pen, pen_w)) = self.files.canvas.as_ref().and_then(|cv| Some((cv.inked?, cv.tool?, cv.pen, cv.pen_w))) else { return false };
@@ -2241,7 +2248,7 @@ impl App {
     fn video_scrub(&mut self, x: f64) {
        
         let Some(id) = self.player.as_ref().map(|p| p.id) else { return }; let Some((_, _, strip, _)) = self.video_boxes(id) else { return };
-        let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let (_, track) = paint::video_strip(strip, s);
+        let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let (_, track) = paint::video_strip(strip, s, self.video_reserve(id, s));
         if let Some(p) = self.player.as_mut() { let n = p.t.frame_count().max(1); let f = (((x - track.x0) / track.width().max(1.0)).clamp(0.0, 1.0) * (n - 1) as f64).round() as i32; p.t.scrub_to_frame(f); p.awake = Instant::now() + std::time::Duration::from_millis(800); }
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
@@ -4089,7 +4096,7 @@ impl ApplicationHandler for App {
                 if state == ElementState::Released && self.player.as_ref().is_some_and(|p| p.scrub) { let mut keep = None; if let Some(p) = self.player.as_mut() { p.t.end_scrub(); p.scrub = false; p.awake = Instant::now() + std::time::Duration::from_millis(800); if !p.t.is_playing() { keep = Some((p.id, p.t.current_frame())); } } if let Some((id, f)) = keep { self.video_keep(id, f); } return }
                 if state == ElementState::Pressed { if let Some((id, pic, strip, _)) = self.video_under(position.x, position.y) {
                     let (nx, ny) = self.note_point(self.pointer); if let Some(l) = self.layout.as_ref() { self.ed.point(l, nx, ny, false); }
-                    let pt = kurbo::Point::new(position.x, position.y); let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let (_, track) = paint::video_strip(strip, s);
+                    let pt = kurbo::Point::new(position.x, position.y); let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let (_, track) = paint::video_strip(strip, s, self.video_reserve(id, s));
                     // a drawing tool is armed: the press draws on the frame (the video pauses for it, and becomes the playing one first)
                     if pic.contains(pt) && self.files.tool.is_some() {
                         if !self.video_start(id, false) { return }
@@ -4106,7 +4113,7 @@ impl ApplicationHandler for App {
                     // the clip's notes: the eye hides their drawings and captions; a small picture or a tick goes to its frame
                     let notes = self.ed.doc.get(id).and_then(|b| match &b.kind { Kind::Media { descriptor } => Some(self.media.notes(descriptor)), _ => None }).unwrap_or_default();
                     if !notes.is_empty() {
-                        if paint::video_eye(strip, s).contains(pt) { self.files.hide_notes = !self.files.hide_notes; if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+                        if paint::video_eye(strip, s, self.video_reserve(id, s)).contains(pt) { self.files.hide_notes = !self.files.hide_notes; if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                         let rec: serde_json::Value = self.video_boxes(id).and_then(|b| serde_json::from_str(&b.3).ok()).unwrap_or_default();
                         let (frames, fps, at) = (rec.get("frames").and_then(|f| f.as_i64()).unwrap_or(1).max(1), rec.get("fps").and_then(|f| f.as_f64()).unwrap_or(24.0), self.player.as_ref().filter(|p| p.id == id).map(|p| p.t.current_frame() as i64).unwrap_or(rec.get("frame").and_then(|f| f.as_i64()).unwrap_or(0)));
                         if let Some(row) = self.video_row(id).filter(|r| r.contains(pt)) {
