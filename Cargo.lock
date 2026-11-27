@@ -5503,6 +5503,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "s23-artcmd-frames"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "min-image",
+]
+
+[[package]]
 name = "s3-text"
 version = "0.0.0"
 dependencies = [

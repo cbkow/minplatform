@@ -1,0 +1,12 @@
+[package]
+name = "s23-artcmd-frames"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "SPIKE S23 (dies after its verdict): a camera-original clip played as a sequence that is not on disk - a vendor's own command-line renderer asked for ranges of EXR frames through named pipes, in the order the image-sequence cache asks"
+
+[dependencies]
+min-image = { path = "../../crates/min-image" }
+libc = "0.2"
