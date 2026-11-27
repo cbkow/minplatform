@@ -2377,7 +2377,7 @@ impl ApplicationHandler for App {
             let c8 = |c: min_theme::Color| winit::platform::windows::Color::from_rgb((c.r * 255.0).round() as u8, (c.g * 255.0).round() as u8, (c.b * 255.0).round() as u8);
             use min_theme::tokens as tk;
             attrs = attrs.with_theme(Some(winit::window::Theme::Dark));
-            attrs = attrs.with_platform_attributes(Box::new(WindowAttributesWindows::default().with_taskbar_icon(big)
+            attrs = attrs.with_platform_attributes(Box::new(WindowAttributesWindows::default().with_taskbar_icon(big).with_undecorated_shadow(true)   // compact mode's frameless window keeps the system's shadow (row 617, a trial)
                 .with_title_background_color(Some(c8(tk::MENU_BAR_BACKGROUND_COLOR))).with_title_text_color(c8(tk::MENU_BAR_TITLE_COLOR))));
         }
         let show_after_first_frame = cfg!(windows);
