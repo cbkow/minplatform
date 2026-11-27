@@ -61,6 +61,8 @@ pub mod k {
     pub const DRAG_VIEWPORT_MOVES_WINDOW: &str = "ui/dragViewportMovesWindow";
     pub const LANGUAGE: &str = "ui/language";
     pub const TIMELINE_HOVER_THUMBS: &str = "ui/timelineHoverThumbs";
+    /// compact mode: the timecode stays on the picture while the controls are away (canon row 617; ours, QCView 2 had no such key)
+    pub const COMPACT_TIMECODE: &str = "ui/compactTimecode";
     pub const TIMELINE_WAVEFORMS: &str = "ui/timelineWaveforms";
     pub const AUTO_UPDATE_CHECKS: &str = "ui/autoUpdateChecks";
     pub const IMAGE_SEQ_THREADS: &str = "performance/imageSeqThreads";
@@ -115,6 +117,7 @@ static KEYS: &[Key] = &[
     Key::bool(k::DRAG_VIEWPORT_MOVES_WINDOW, true),
     Key::str(k::LANGUAGE, ""),
     Key::bool(k::TIMELINE_HOVER_THUMBS, true),
+    Key::bool(k::COMPACT_TIMECODE, true),
     Key::bool(k::TIMELINE_WAVEFORMS, true),
     Key::bool(k::AUTO_UPDATE_CHECKS, true),
     Key::int(k::IMAGE_SEQ_THREADS, 16, 1, 64),

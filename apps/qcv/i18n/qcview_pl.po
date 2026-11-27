@@ -4673,3 +4673,13 @@ msgstr "32-bitowy całkowity"
 msgctxt "QuickLook"
 msgid "This file cannot be shown: %1"
 msgstr "Nie można wyświetlić tego pliku: %1"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "CompactStrip"
+msgid "Timecode stays on the picture. Click to hide it with the controls."
+msgstr "Kod czasowy pozostaje na obrazie. Kliknij, aby ukrywać go razem z elementami sterującymi."
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "CompactStrip"
+msgid "Timecode hides with the controls. Click to keep it on the picture."
+msgstr "Kod czasowy ukrywa się razem z elementami sterującymi. Kliknij, aby pozostawał na obrazie."

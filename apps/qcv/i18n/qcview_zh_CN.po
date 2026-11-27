@@ -4657,3 +4657,13 @@ msgstr "32 位整数"
 msgctxt "QuickLook"
 msgid "This file cannot be shown: %1"
 msgstr "无法显示此文件：%1"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "CompactStrip"
+msgid "Timecode stays on the picture. Click to hide it with the controls."
+msgstr "时间码保留在画面上。点按可使其随控件一起隐藏。"
+
+#. drafted 2026-11-26, unreviewed
+msgctxt "CompactStrip"
+msgid "Timecode hides with the controls. Click to keep it on the picture."
+msgstr "时间码随控件一起隐藏。点按可使其保留在画面上。"

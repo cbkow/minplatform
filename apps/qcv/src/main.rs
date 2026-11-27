@@ -1069,7 +1069,7 @@ impl App {
             // the dual controls on it (QCView left no controls at all there)
             let live_on = (self.live.is_some() || (self.dual.as_ref().is_some_and(|d| !d.has_clocked_side()) && self.side_live.iter().any(|l| l.is_some()))) && !g.compact;
             let strip_h = if live_on { 0.0 } else { t::STATUS_STRIP_HEIGHT as f64 * scale };
-            let bands_h = if g.compact { t::SCRUBBER_HEIGHT as f64 * scale } else if live_on { t::TRANSPORT_BAR_HEIGHT as f64 * scale } else { strip_h + (t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + bar_h };
+            let bands_h = if g.compact { 0.0 } else if live_on { t::TRANSPORT_BAR_HEIGHT as f64 * scale } else { strip_h + (t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + bar_h };
             if g.fullscreen {
                 // the pointer at the bottom edge (or on the shown bands) reveals; leaving starts the hide delay
                 let (px, py) = g.pointer;
@@ -1082,7 +1082,7 @@ impl App {
             let slide = bands_h * (1.0 - g.bands.value(now) as f64);
             let scrub_y = if live_on { h as f64 + slide } else { h as f64 - t::SCRUBBER_HEIGHT as f64 * scale - bar_h + slide };
             // the rails span the viewport row (QCView's layout: the bands run full width beneath); none in fullscreen
-            let rails_bottom = if g.compact { scrub_y } else { scrub_y - t::TRANSPORT_BAR_HEIGHT as f64 * scale - strip_h };
+            let rails_bottom = if g.compact { h as f64 } else { scrub_y - t::TRANSPORT_BAR_HEIGHT as f64 * scale - strip_h };
             let chromeless = g.fullscreen || g.compact;   // QCView: fullscreen or compact hides every rail and band
             // the Color drawer (row 199) sits on the bands and pushes the rails' bottom (and the picture) up
             let notes_h = if chromeless { 0.0 } else { g.notes.visible_height(now, scale) };
@@ -1206,8 +1206,8 @@ impl App {
             if let Some(p) = self.player.as_ref() { self.settings.set_bool(settings::k::LOOP_ENABLED, p.loop_enabled()); }
             if !chromeless { self.settings.set_int(settings::k::LEFT_RAIL_WIDTH, g.left.width.round() as i64); self.settings.set_int(settings::k::RIGHT_RAIL_WIDTH, g.right.width.round() as i64); self.settings.set_bool(settings::k::LEFT_RAIL_COLLAPSED, g.left.collapsed); self.settings.set_bool(settings::k::RIGHT_RAIL_COLLAPSED, g.right.collapsed); }
             if let Err(e) = self.settings.save_if_dirty() { log::warn!("settings: {e}"); }
-            g.scrubber.compact = g.compact;
-            if g.compact { g.strip.sync(pb(&self.dual, &self.player)); let tc = g.strip.timecode_text().to_string(); g.compact_strip.set_live(self.live.is_some()); g.compact_strip.sync(pb(&self.dual, &self.player), &tc, g.pinned, now); g.compact_strip.layout(&mut g.fonts, w as f64, scrub_y, scale); let sr = g.compact_strip.scrub_rect; g.scrubber.layout(sr, scale); if g.compact_strip.tick(now) { g.ui_dirty = true; } }
+            g.scrubber.compact = g.compact; g.scrubber.bare = g.compact;   // compact: the line on the glass bar (row 617)
+            if g.compact { g.strip.sync(pb(&self.dual, &self.player)); let tc = g.strip.timecode_text().to_string(); g.compact_strip.set_live(self.live.is_some()); g.compact_strip.sync(pb(&self.dual, &self.player), &tc, g.pinned, now); g.compact_strip.keep_tc = self.settings.bool(settings::k::COMPACT_TIMECODE); let held = g.scrubber.is_pressed(); if g.compact_strip.layout(&mut g.fonts, w as f64, h as f64, scale, held, now) { g.ui_dirty = true; } let sr = g.compact_strip.scrub_rect; g.scrubber.layout(sr, scale); if g.compact_strip.tick(now) { g.ui_dirty = true; } }
             else { g.scrubber.layout(kurbo::Rect::new(0.0, scrub_y, w as f64, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale), scale); let lanes = if bar_h > 0.0 { kurbo::Rect::new(0.0, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale, w as f64, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale + bar_h) } else { kurbo::Rect::ZERO }; g.clip_bar.rect = if self.pl_editor.is_some() { lanes } else { kurbo::Rect::ZERO }; g.dual_bars.rect = if self.dual.is_some() { lanes } else { kurbo::Rect::ZERO }; }
             if g.scrubber.follow(&st, scale) { g.ui_dirty = true; }
             // the waveforms on the playbar (canon row 280): every clip with sound on the timeline, at its place and from its own
@@ -1303,9 +1303,10 @@ impl App {
                 let scene = u.scene_mut();
                 if g.compact {
                     scene.reset();
-                    g.scrubber.paint(scene, &mut g.fonts, scale, &st, &[]);
-                    g.compact_strip.paint(scene, &mut g.fonts, scale, now);
-                    if self.dual.is_some() { let hb = g.thumbs_b.shown_height(content); let gap = if hb > 0.0 { hb + t::SPACING_100 as f64 * scale } else { 0.0 }; g.thumbs_b.paint(scene, content, scale, Some(g.pointer.0)); g.thumbs.paint_lifted(scene, content, scale, Some(g.pointer.0), gap); } else { g.thumbs.paint(scene, content, scale, Some(g.pointer.0)); }
+                    { let sc = &g.scrubber; g.compact_strip.paint(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now, |b, fonts| sc.paint(b, fonts, scale, &st, &[])); }
+                    // the hover thumbnails stand on the bar, not on the window's foot
+                    let lift = (content.y1 - g.compact_strip.rect.y0).max(0.0) + t::SPACING_100 as f64 * scale;
+                    if self.dual.is_some() { let hb = g.thumbs_b.shown_height(content); let gap = if hb > 0.0 { hb + t::SPACING_100 as f64 * scale } else { 0.0 }; g.thumbs_b.paint_lifted(scene, content, scale, Some(g.pointer.0), lift); g.thumbs.paint_lifted(scene, content, scale, Some(g.pointer.0), lift + gap); } else { g.thumbs.paint_lifted(scene, content, scale, Some(g.pointer.0), lift); }
                     g.compact_strip.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                     g.ui_shown_frame = key; g.ui_dirty = false;
                 } else {
@@ -1451,14 +1452,14 @@ impl App {
                 compact_strip::Cmd::Act(a) => { if let Some(p) = pb_mut(&mut self.dual, &mut self.player) { p.apply(a, now); } }
                 compact_strip::Cmd::Pin => self.toggle_pin(),
                 compact_strip::Cmd::Exit => { self.toggle_compact(); return }
-                compact_strip::Cmd::DragWindow => { if let Some(g) = self.gpu.as_ref() { if let Err(e) = g.window.drag_window() { log::debug!("drag_window: {e}"); } } }
+                compact_strip::Cmd::KeepTimecode(on) => { self.settings.set_bool(settings::k::COMPACT_TIMECODE, on); }
             } }
             let Some(g) = self.gpu.as_mut() else { return };
             if consumed && !(g.scrubber.is_pressed() && matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. })) { return }
             let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref());
             let (scmds, sd) = g.scrubber.event(&e, now, &st, scale); if sd { g.ui_dirty = true; }
             if let Some(p) = pb_mut(&mut self.dual, &mut self.player) { for c in scmds { match c { min_ui::ScrubCmd::Begin => { if *TRACE_SCRUB { println!("scrub: begin at {:.1} ms", trace_ms()); } p.begin_scrub() } min_ui::ScrubCmd::To(f) => { if *TRACE_SCRUB { println!("scrub: request {f} at {:.1} ms", trace_ms()); self.scrub_last_req = Some((f, Instant::now())); } p.scrub_to_frame(f) } min_ui::ScrubCmd::End => { if *TRACE_SCRUB { println!("scrub: end at {:.1} ms", trace_ms()); } p.end_scrub() } min_ui::ScrubCmd::Note(f) => p.seek_to_frame(f) } } }
-            self.window_move_arm(&e);   // compact: the picture moves the window too (the strip's timecode handle stays)
+            self.window_move_arm(&e);   // compact: the picture is the window's handle (row 617)
             return
         }
         // THE POINTER GRAB: a press on a band node (the scrubber, a transport button, the volume slider) owns Move / Up until the
@@ -1712,7 +1713,7 @@ impl App {
     fn window_move_arm(&mut self, e: &min_ui::Event) {
         match *e {
             min_ui::Event::Down { x, y, button: min_ui::Button::Primary } => {
-                let ok = self.settings.bool(settings::k::DRAG_VIEWPORT_MOVES_WINDOW) && !self.annot.active
+                let ok = (self.settings.bool(settings::k::DRAG_VIEWPORT_MOVES_WINDOW) || self.gpu.as_ref().is_some_and(|g| g.compact)) && !self.annot.active   // compact has no other handle: there the picture moves the window whatever the setting
                     && self.gpu.as_ref().is_some_and(|g| !g.fullscreen && !g.seam_drag && !g.scrubber.hit(x, y) && !g.scrubber.is_pressed()
                         && g.presenter.engine.content_rect().is_some_and(|(cx, cy, cw, ch)| x >= cx as f64 && y >= cy as f64 && x < (cx + cw) as f64 && y < (cy + ch) as f64));
                 self.move_arm = ok.then_some((x, y));
