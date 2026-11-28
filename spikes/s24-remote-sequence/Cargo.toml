@@ -1,0 +1,11 @@
+[package]
+name = "s24-remote-sequence"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "SPIKE S24 (dies after its verdict): numbered frames pulled from another process through shared memory, in the order the image-sequence cache asks - what the hand-over itself costs"
+
+[dependencies]
+libc = "0.2"
