@@ -1,0 +1,15 @@
+[package]
+name = "min-framelink"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "MIT OR Apache-2.0"
+description = "The frame link (canon row 623): a host starts a provider - another program - and pulls numbered frames and sound from it into shared memory the host owns. The messages, the shared blocks, the host's side, and how a provider makes itself known"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+libc = { workspace = true }
