@@ -4791,14 +4791,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "qcv-mxf"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "qcv-notes"
 version = "0.1.0"
 dependencies = [

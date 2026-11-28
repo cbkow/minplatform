@@ -1,5 +1,7 @@
 # Step 2d — the MXF scanner (canon row 137)
 
+**REMOVED 2026-11-28 (canon row 621):** the crate and its table generator were deleted; nothing used them. The last commit that holds them is `0e70f10` (built at `52ef5a5`). What follows is the record of what was built.
+
 **Built 2026-11-08** (the user: "this sounds cleaner if we can pull it off"). `crates/qcv-mxf`: ExifTool's MXF reader
 (`Image::ExifTool::MXF::ProcessMXF`, the oracle QCView bundled) carried rule for rule onto Rust; its tag table generated from
 ExifTool's `MXF.pm` v1.09 by `tools/mxf-tags/gen.py` (1 652 entries — the hidden "Unknown" ones kept: ExifTool never

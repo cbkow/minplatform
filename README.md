@@ -24,7 +24,7 @@ apps/qcv/       QCView 3 (the binary is `QCView`)
 apps/mn/        minNotes 3 (`minNotes`)
 apps/mr/        minRender 1 (`minRender`: node, leader, window, tray and supervisor in one executable)
 apps/ufb/       UFB 2 (`UFB`)
-crates/         the platform, shared: decoding (min-ffmpeg, min-image, min-pdf, qcv-mxf), presenting (min-present),
+crates/         the platform, shared: decoding (min-ffmpeg, min-image, min-pdf), presenting (min-present),
                 the interface (min-ui, min-theme, min-i18n), drag and drop (min-dnd), running FFmpeg (min-transcode),
                 settings and paths (min-settings, min-paths);
                 QCView's own and what the others borrow of it: colour (qcv-color), the player, timeline, project,
