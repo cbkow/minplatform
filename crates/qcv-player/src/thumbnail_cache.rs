@@ -253,6 +253,9 @@ impl VideoThumbLoader {
     pub fn open(path: &str) -> Option<VideoThumbLoader> { Self::open_with(path, crate::rgb_range::RangeOverride::Auto) }
     /// The clip's Range override applies to its thumbnails as to its picture (the 2026-11-09 owed item).
     pub fn open_with(path: &str, range: crate::rgb_range::RangeOverride) -> Option<VideoThumbLoader> {
+        // a remote sequence's file is its provider's to read (canon row 624): no thumbnail comes from FFmpeg, which finds
+        // a stream it has no decoder for
+        if crate::remote_decoder::reads(path) { return None }
         // slice threads for intra codecs, frame threads at half the cores for inter ones (QCView: one thread; see the module doc)
         let session = Session::open(path, &OpenOptions { threads: crate::thread_policy::dual_side_thread_count(), hw: None, hw_intra: None, seq: None, fast: true , live: None }).ok()?;
         let fps = session.info.rate().as_f64(); let frames = session.info.frame_count;
@@ -322,6 +325,7 @@ unsafe impl Send for FrameReader {}
 impl Drop for FrameReader { fn drop(&mut self) { unsafe { if !self.sws.sws.is_null() { ff::sws_freeContext(self.sws.sws); } } } }
 impl FrameReader {
     pub fn open(path: &str) -> Option<FrameReader> {
+        if crate::remote_decoder::reads(path) { return None }   // (as the thumbnail loader: the file is its provider's to read)
         let session = Session::open(path, &OpenOptions { threads: crate::thread_policy::dual_side_thread_count(), hw: None, hw_intra: None, seq: None, fast: false, live: None }).ok()?;
         Some(FrameReader { session, sws: VideoThumbLoaderSws { sws: std::ptr::null_mut(), sws_key: (0, 0, 0, 0, 0), range: crate::rgb_range::RangeOverride::Auto, flags: SWS_BICUBIC }, eof: false })
     }
