@@ -4,7 +4,7 @@
 //! rotation snap, the embedded-timecode walk, the ProRes fourcc / profile flavours, the container family split on
 //! `major_brand`, the MXF operational pattern from the OP UL, the authoring-tool assembly, the DNxHD / DNxHR CID tables with
 //! the fixed-frame bitrate, the all-streams audio rule, the HDR10 side data, the container-range capture between open and
-//! find_stream_info), `adobe_metadata_extractor.{h,cpp}` (exiftool's dozen keys — read here from the XMP packet FFmpeg
+//! find_stream_info), `adobe_metadata_extractor.{h,cpp}` (its dozen keys — read here from the XMP packet FFmpeg
 //! exports and the container's own tags, row 134; the `xmp` module), `decode/timecode_formatter.{h,cpp}` (row 136; lives
 //! here so ufb / minNotes get it through the family crate, re-exported by `qcv-player` for the Transport), and
 //! `metadata_service.{h,cpp}` (the thread-pool service, with row 132's latest-wins generations). `decode/stream_extent.h`
@@ -47,7 +47,7 @@ pub struct VideoMetadata {
 impl Default for VideoMetadata { fn default() -> Self { VideoMetadata { loaded: false, file_size: 0, width: 0, height: 0, frame_rate: 0.0, total_frames: 0, duration: 0.0, video_codec: String::new(), codec_profile: String::new(), pixel_format: String::new(), bit_depth: 8, has_alpha: false, is_rgb: false, sar_num: 1, sar_den: 1, is_anamorphic: false, rotation_deg: 0, colorspace: String::new(), color_primaries: String::new(), color_transfer: String::new(), color_range: String::new(), nclc_tag: String::new(), container_range_tag: String::new(), is_hdr_content: false, max_cll: 0, max_fall: 0, mastering_max_nits: 0.0, has_embedded_timecode: false, embedded_timecode: String::new(), audio_codec: String::new(), audio_sample_rate: 0, audio_channels: 0, audio_stream_count: 0, audio_channel_layout_name: String::new(), unsupported_codec: false, camera_vendor: String::new(), camera_model: String::new(), container_format: String::new(), mxf_operational_pattern: String::new(), encoder_tool: String::new(), container_bitrate: 0, video_bitrate: 0 } } }
 impl VideoMetadata { fn fresh() -> VideoMetadata { VideoMetadata::default() } }
 
-/// QCView's `AdobeMetadata`: the project links and the timecodes exiftool used to read (row 134: from FFmpeg now).
+/// QCView's `AdobeMetadata`: the project links and the timecodes (row 134: read through FFmpeg).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AdobeMetadata {
     pub loaded: bool,

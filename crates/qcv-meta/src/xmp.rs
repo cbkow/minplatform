@@ -1,21 +1,21 @@
-//! The Adobe metadata reader (row 134): what `AdobeMetadataExtractor` asked exiftool for, read from what FFmpeg already
+//! The Adobe metadata reader (row 134): the fields `AdobeMetadataExtractor` reported, read from what FFmpeg already
 //! has — the XMP packet the `mov` demuxer exports under the `xmp` metadata key when opened with `export_xmp=1` (the
 //! `aeProjectLink:fullPath` link After Effects writes, `xmpDM:windowsAtom` / `xmpDM:macAtom`'s project paths Premiere
 //! writes, `xmpDM:startTimecode` / `xmpDM:altTimecode`'s `timeValue`, `xmp:CreateDate`), plus the container's own
-//! `creation_time` and the embedded `timecode` (the tmcd track / MXF's) that exiftool reported as the QuickTime /
-//! UserData / MXF timecodes. MXF: the user's corpus carries no XMP (row 134), the structural tags are row 137's scanner.
+//! `creation_time` and the embedded `timecode` (the tmcd track / MXF's), QCView's QuickTime /
+//! UserData / MXF timecodes. MXF: the user's corpus carries no XMP (row 134).
 use crate::AdobeMetadata;
 use ffmpeg_sys_next as ff;
 use quick_xml::{events::Event, Reader};
 use std::ffi::CString;
 
-/// The dozen fields, keyed as exiftool names them (`-s` output).
+/// The dozen fields, keyed as QCView's Inspector names them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct XmpFields { pub ae_project_link_full_path: String, pub windows_atom_unc_project_path: String, pub mac_atom_posix_project_path: String, pub start_timecode: String, pub alt_timecode: String, pub create_date: String }
 
 /// Parse an XMP packet: simple properties as attributes OR elements, the structs by their parent element; keys are matched
-/// by namespace prefix + local name so `aeProjectLink:fullPath` and `xmpDM:timeValue` under `startTimecode` land where
-/// exiftool's names put them.
+/// by namespace prefix + local name so `aeProjectLink:fullPath` and `xmpDM:timeValue` under `startTimecode` land in the
+/// fields above.
 pub fn parse_xmp(packet: &str) -> XmpFields {
     let mut out = XmpFields::default();
     let mut reader = Reader::from_str(packet);
@@ -45,7 +45,7 @@ pub fn parse_xmp(packet: &str) -> XmpFields {
     out
 }
 /// The document's own values win: the `xmpMM:Pantry` (the ingredients' copies) and the history are skipped, the first
-/// occurrence of each key sticks (exiftool reports the top-level Description's).
+/// occurrence of each key sticks (the top-level Description's).
 fn assign(out: &mut XmpFields, context: &[(String, String)], prefix: &str, key: &str, val: &str) {
     let under = |p: &str| context.iter().any(|(_, l)| l == p);
     if under("Pantry") || under("Ingredients") || under("History") || under("Tracks") { return }
@@ -53,7 +53,7 @@ fn assign(out: &mut XmpFields, context: &[(String, String)], prefix: &str, key: 
     match (prefix, key) {
         ("aeProjectLink", "fullPath") => set(&mut out.ae_project_link_full_path),
         // newer After Effects writes the link as a creatorAtom struct (`<creatorAtom:aeProjectLink creatorAtom:fullPath="…"/>`) —
-        // exiftool names both AeProjectLinkFullPath (found on a 2022 render: the reader had only the older namespace)
+        // both are the same field, the project link's full path (found on a 2022 render: the reader had only the older namespace)
         (_, "fullPath") if under("aeProjectLink") => set(&mut out.ae_project_link_full_path),
         (_, "uncProjectPath") if under("windowsAtom") => set(&mut out.windows_atom_unc_project_path),
         (_, "posixProjectPath") if under("macAtom") => set(&mut out.mac_atom_posix_project_path),
@@ -64,9 +64,9 @@ fn assign(out: &mut XmpFields, context: &[(String, String)], prefix: &str, key: 
     }
 }
 
-/// FFmpeg's ISO `creation_time` ("2024-03-05T01:54:32.000000Z") in exiftool's form ("2024:03:05 01:54:32"), the string the
+/// FFmpeg's ISO `creation_time` ("2024-03-05T01:54:32.000000Z") in QCView's form ("2024:03:05 01:54:32"), the string the
 /// Inspector showed.
-pub fn exiftool_date(iso: &str) -> String {
+pub fn inspector_date(iso: &str) -> String {
     let t = iso.trim(); if t.len() < 19 || t.as_bytes()[10] != b'T' { return t.to_string() }
     format!("{}:{}:{} {}", &t[0..4], &t[5..7], &t[8..10], &t[11..19])
 }
@@ -92,7 +92,7 @@ pub fn read_adobe_metadata(path: &str) -> AdobeMetadata {
             m.ae_project_path = f.ae_project_link_full_path; m.premiere_win_path = f.windows_atom_unc_project_path; m.premiere_mac_path = f.mac_atom_posix_project_path;
             m.xmp_start_timecode = f.start_timecode; m.xmp_alt_timecode = f.alt_timecode; m.qt_creation_date = f.create_date;
         }
-        m.qt_media_create_date = exiftool_date(&get((*fmt).metadata, "creation_time"));
+        m.qt_media_create_date = inspector_date(&get((*fmt).metadata, "creation_time"));
         // the embedded timecode: the tmcd track (QuickTime:TimeCode / UserData:TimeCode) or MXF's (MXF:StartTimecode)
         let mut tc = String::new();
         for i in 0..(*fmt).nb_streams { let t = get((**(*fmt).streams.add(i as usize)).metadata, "timecode"); if !t.is_empty() { tc = t; break } }
@@ -126,8 +126,8 @@ mod tests {
 <xmpMM:Pantry><rdf:Bag><rdf:li><rdf:Description><xmpDM:startTimecode xmpDM:timeValue="05:00:00:00"/></rdf:Description></rdf:li></rdf:Bag></xmpMM:Pantry>
 <creatorAtom:windowsAtom creatorAtom:extension=".prproj" creatorAtom:uncProjectPath="\\srv\jobs\z.prproj"/>
 </rdf:Description></rdf:RDF></x:xmpmeta>"#;
-        let f = parse_xmp(premiere); assert_eq!(f.start_timecode, "01:00:00:00"); assert_eq!(f.windows_atom_unc_project_path, r"\\srv\jobs\z.prproj"); assert_eq!(f.alt_timecode, "");   // the attribute text, verbatim (exiftool shows the same)
+        let f = parse_xmp(premiere); assert_eq!(f.start_timecode, "01:00:00:00"); assert_eq!(f.windows_atom_unc_project_path, r"\\srv\jobs\z.prproj"); assert_eq!(f.alt_timecode, "");   // the attribute text, verbatim
         assert_eq!(parse_xmp(attr).ae_project_link_full_path, r"C:\p.aep");
-        assert_eq!(exiftool_date("2024-03-05T01:54:32.000000Z"), "2024:03:05 01:54:32");
+        assert_eq!(inspector_date("2024-03-05T01:54:32.000000Z"), "2024:03:05 01:54:32");
     }
 }

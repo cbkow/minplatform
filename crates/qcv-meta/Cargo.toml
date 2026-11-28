@@ -7,7 +7,7 @@ authors.workspace = true
 repository.workspace = true
 publish = false
 license = "MIT OR Apache-2.0"
-description = "The family's media metadata: QCView's VideoMetadata / AdobeMetadata / ImageSequenceData, the FFmpeg extractor and probes, the XMP reader (exiftool's keys), the timecode formatter, the async service (canon §23, rows 132–136)"
+description = "The family's media metadata: QCView's VideoMetadata / AdobeMetadata / ImageSequenceData, the FFmpeg extractor and probes, the XMP reader, the timecode formatter, the async service (canon §23, rows 132–136)"
 
 [dependencies]
 ffmpeg-sys-next = { workspace = true }
