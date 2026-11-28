@@ -11,6 +11,7 @@ pub fn media_info(m: &MediaItem) -> MediaInfo {
     let (kind, mut fps, mut frames, mut w, mut h) = match m.media_type {
         MediaType::ImageSequence => (ClipMediaKind::ImageSequence, m.image_seq.frame_rate, m.image_seq.frame_count as i64, m.image_seq.width, m.image_seq.height),
         MediaType::Audio => (ClipMediaKind::Audio, 0.0, 0, 0, 0),
+        MediaType::RemoteSequence => (ClipMediaKind::RemoteSequence, m.video.frame_rate, m.video.total_frames as i64, m.video.width, m.video.height),
         _ => (ClipMediaKind::Video, m.video.frame_rate, m.video.total_frames as i64, m.video.width, m.video.height),
     };
     if kind == ClipMediaKind::Video && (fps <= 0.0 || frames <= 0) {

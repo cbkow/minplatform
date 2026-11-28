@@ -223,7 +223,7 @@ impl App {
         if item.media_type == qcv_project::MediaType::DualPair { self.load_dual_view(id); return }
         // in dual (QCView `loadRequested`): a video / sequence becomes A in place; anything else falls back to the single view
         if self.dual.is_some() {
-            if matches!(item.media_type, qcv_project::MediaType::Video | qcv_project::MediaType::Audio | qcv_project::MediaType::ImageSequence | qcv_project::MediaType::LiveStream) {
+            if matches!(item.media_type, qcv_project::MediaType::Video | qcv_project::MediaType::Audio | qcv_project::MediaType::ImageSequence | qcv_project::MediaType::LiveStream | qcv_project::MediaType::RemoteSequence) {
                 let ok = self.set_dual_side(qcv_player::Side::A, id);
                 self.project.set_load_failed(id, !ok);
                 if ok { self.project.set_active_item(id); self.loaded_item = id.to_string(); if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
@@ -233,7 +233,7 @@ impl App {
         }
         self.project.set_active_item(id);
         match item.media_type {
-            qcv_project::MediaType::Video | qcv_project::MediaType::Audio => {}
+            qcv_project::MediaType::Video | qcv_project::MediaType::Audio | qcv_project::MediaType::RemoteSequence => {}   // (a remote sequence opens by its path, as a video does: the slot finds its provider)
             qcv_project::MediaType::Playlist => { let ok = self.load_playlist(id); self.project.set_load_failed(id, !ok); if ok { self.loaded_item = id.to_string(); } if let Some(g) = self.gpu.as_mut() { g.content_set = None; g.ui_dirty = true; } return }
             qcv_project::MediaType::ImageSequence => {}
             qcv_project::MediaType::LiveStream => { let ok = self.start_live(id, &item); self.project.set_load_failed(id, !ok); return }
@@ -322,7 +322,8 @@ impl App {
         self.toast(&text, min_ui::ToastKind::Notice);
     }
     fn open_media_dialog(&mut self) {
-        let all: Vec<&str> = qcv_project::extensions::VIDEO.iter().chain(qcv_project::extensions::AUDIO).chain(qcv_project::extensions::IMAGE).copied().collect();
+        // what the installed providers open joins "All media" (canon row 624); with none installed the list is what it was
+        let all: Vec<&str> = qcv_project::extensions::VIDEO.iter().chain(qcv_project::extensions::AUDIO).chain(qcv_project::extensions::IMAGE).copied().chain(qcv_project::extensions::remote().iter().map(String::as_str)).collect();
         let picked = rfd::FileDialog::new().set_title(trm("Open Media")).add_filter(trm("All media"), &all).add_filter(trm("Video files"), qcv_project::extensions::VIDEO).add_filter(trm("Audio files"), qcv_project::extensions::AUDIO).add_filter(trm("Image / sequence files"), qcv_project::extensions::IMAGE).pick_files();
         let Some(paths) = picked else { return };
         let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
@@ -2334,14 +2335,14 @@ enum DropTarget { Bin, Viewport, /// dual view: a chip, or the picture by mode (
 fn clip_to_qcview(c: &qcv_timeline::Clip, master: qcv_timeline::Rate) -> serde_json::Value {
     let sf = c.source_rate.as_f64().max(1e-9); let mf = master.as_f64().max(1e-9);
     serde_json::json!({ "id": c.id, "name": c.name, "startTime": c.start as f64 / mf, "duration": c.duration as f64 / mf, "sourceIn": c.source_in as f64 / sf, "sourceOut": c.source_out as f64 / sf, "isGap": c.is_gap,
-        "mediaKind": match c.media_kind { qcv_timeline::ClipMediaKind::Video => 0, qcv_timeline::ClipMediaKind::ImageSequence => 1, qcv_timeline::ClipMediaKind::Audio => 2 },
+        "mediaKind": match c.media_kind { qcv_timeline::ClipMediaKind::Video => 0, qcv_timeline::ClipMediaKind::ImageSequence => 1, qcv_timeline::ClipMediaKind::Audio => 2, qcv_timeline::ClipMediaKind::RemoteSequence => 3 },
         "mediaPath": c.media_path, "mediaItemId": c.media_item_id, "sourceFps": c.source_rate.as_f64(), "sourceDuration": c.source_duration as f64 / sf, "hasAudio": c.has_audio })
 }
 /// QCView's `clipFromMap`: back to frames (the master rate for positions, the clip's fps for its source window).
 fn clip_from_qcview(v: &serde_json::Value, master: qcv_timeline::Rate) -> Option<qcv_timeline::Clip> {
     let o = v.as_object()?; let f = |k: &str| o.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0); let st = |k: &str| o.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
     let sr = qcv_timeline::Rate::from_f64(if f("sourceFps") > 0.0 { f("sourceFps") } else { master.as_f64() }); let (sf, mf) = (sr.as_f64(), master.as_f64());
-    let kind = match o.get("mediaKind").and_then(|x| x.as_i64()).unwrap_or(0) { 1 => qcv_timeline::ClipMediaKind::ImageSequence, 2 => qcv_timeline::ClipMediaKind::Audio, _ => qcv_timeline::ClipMediaKind::Video };
+    let kind = match o.get("mediaKind").and_then(|x| x.as_i64()).unwrap_or(0) { 1 => qcv_timeline::ClipMediaKind::ImageSequence, 2 => qcv_timeline::ClipMediaKind::Audio, 3 => qcv_timeline::ClipMediaKind::RemoteSequence, _ => qcv_timeline::ClipMediaKind::Video };
     Some(qcv_timeline::Clip { id: if st("id").is_empty() { qcv_timeline::fresh_id() } else { st("id") }, name: st("name"), start: (f("startTime") * mf).round() as i64, duration: (f("duration") * mf).round() as i64, source_in: (f("sourceIn") * sf).round() as i64, source_out: (f("sourceOut") * sf).round() as i64, is_gap: o.get("isGap").and_then(|x| x.as_bool()).unwrap_or(false), media_kind: kind, media_path: st("mediaPath"), media_item_id: st("mediaItemId"), source_rate: sr, source_duration: (f("sourceDuration") * sf).round() as i64, has_audio: o.get("hasAudio").and_then(|x| x.as_bool()).unwrap_or(false), ..qcv_timeline::Clip::empty() })
 }
 fn write_png_rgb8(path: &str, px: &[f32], w: u32, h: u32) {

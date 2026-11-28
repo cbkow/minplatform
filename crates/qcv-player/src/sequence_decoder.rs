@@ -11,6 +11,7 @@
 //!
 //! Formats `min-image` does not read (DPX, TGA, BMP) stay on FFmpeg's image2 demuxer through the [`VideoDecoder`]
 //! (row 148: "FFmpeg's decoder stays the fallback").
+use crate::remote_decoder::RemoteDecoder;
 use crate::{ffmpeg::SessionInfo, frame_handle::FrameHandle, frame_index::FrameIndex, image_sequence_cache::{ImageSequenceCache, StreamingConfig}, rgb_range::RangeOverride, video_decoder::{State, VideoDecoder}, Error};
 use min_image::{Image, Sample};
 use min_present::{Chroma, ColorMeta, Frame, Matrix, Pixels, Plane, PlanarLayout, Primaries, Range, Transfer};
@@ -229,9 +230,10 @@ impl AudioOnly {
     pub fn fetch_latest(&self) -> Option<FrameHandle> { None }
 }
 
-/// A transport slot's decoder: a video stream, an image sequence through the cache, or an audio-only file (no picture).
-pub enum SlotDecoder { Video(VideoDecoder), Sequence(SequenceDecoder), Audio(AudioOnly) }
-macro_rules! both { ($s:expr, $d:ident => $e:expr) => { match $s { SlotDecoder::Video($d) => $e, SlotDecoder::Sequence($d) => $e, SlotDecoder::Audio($d) => $e } } }
+/// A transport slot's decoder: a video stream, an image sequence through the cache, an audio-only file (no picture), or a
+/// remote sequence - frames pulled from a provider (canon row 624).
+pub enum SlotDecoder { Video(VideoDecoder), Sequence(SequenceDecoder), Audio(AudioOnly), Remote(RemoteDecoder) }
+macro_rules! both { ($s:expr, $d:ident => $e:expr) => { match $s { SlotDecoder::Video($d) => $e, SlotDecoder::Sequence($d) => $e, SlotDecoder::Audio($d) => $e, SlotDecoder::Remote($d) => $e } } }
 impl SlotDecoder {
     pub fn play(&self) { both!(self, d => d.play()) }
     pub fn pause(&self) { both!(self, d => d.pause()) }
@@ -245,17 +247,21 @@ impl SlotDecoder {
     pub fn fetch_due(&self, f: i32) -> (Option<FrameHandle>, u32) { both!(self, d => d.fetch_due(f)) }
     pub fn fetch_latest(&self) -> Option<FrameHandle> { both!(self, d => d.fetch_latest()) }
     /// A scrub move with no scrub decoder: the video seeks, the sequence's playhead follows.
-    pub fn scrub_to(&self, f: i32) { match self { SlotDecoder::Video(d) => d.seek_to_frame(f), SlotDecoder::Sequence(d) => d.scrub_to(f), SlotDecoder::Audio(d) => d.seek_to_frame(f) } }
-    pub fn frame_index(&self) -> Option<&Arc<FrameIndex>> { match self { SlotDecoder::Video(d) => d.frame_index(), SlotDecoder::Sequence(d) => Some(d.frame_index()), SlotDecoder::Audio(_) => None } }
+    pub fn scrub_to(&self, f: i32) { match self { SlotDecoder::Video(d) => d.seek_to_frame(f), SlotDecoder::Sequence(d) => d.scrub_to(f), SlotDecoder::Audio(d) => d.seek_to_frame(f), SlotDecoder::Remote(d) => d.scrub_to(f) } }
+    pub fn frame_index(&self) -> Option<&Arc<FrameIndex>> { match self { SlotDecoder::Video(d) => d.frame_index(), SlotDecoder::Sequence(d) => Some(d.frame_index()), SlotDecoder::Audio(_) => None, SlotDecoder::Remote(d) => Some(d.frame_index()) } }
     pub fn front_is_external(&self) -> bool { match self { SlotDecoder::Video(d) => d.front_is_external(), _ => false } }
     pub fn queued(&self) -> usize { match self { SlotDecoder::Video(d) => d.queued(), _ => 0 } }
     pub fn set_playback_speed(&self, s: f64) { if let SlotDecoder::Video(d) = self { d.set_playback_speed(s) } }
     pub fn set_range_override(&self, r: RangeOverride) { if let SlotDecoder::Video(d) = self { d.set_range_override(r) } }
     pub fn set_read_ahead_range(&self, first: i32, last: i32) { if let SlotDecoder::Video(d) = self { d.set_read_ahead_range(first, last) } }
-    pub fn decode_error_count(&self) -> u32 { match self { SlotDecoder::Video(d) => d.decode_error_count(), SlotDecoder::Sequence(d) => d.cache.failed_count() as u32, SlotDecoder::Audio(_) => 0 } }
-    pub fn last_decode_error(&self) -> String { match self { SlotDecoder::Video(d) => d.last_decode_error(), SlotDecoder::Sequence(d) => d.cache.failed_frames().first().map(|f| format!("frame {f} failed")).unwrap_or_default(), SlotDecoder::Audio(_) => String::new() } }
+    pub fn decode_error_count(&self) -> u32 { match self { SlotDecoder::Video(d) => d.decode_error_count(), SlotDecoder::Sequence(d) => d.cache.failed_count() as u32, SlotDecoder::Audio(_) => 0, SlotDecoder::Remote(d) => d.failed_count() as u32 } }
+    pub fn last_decode_error(&self) -> String { match self { SlotDecoder::Video(d) => d.last_decode_error(), SlotDecoder::Sequence(d) => d.cache.failed_frames().first().map(|f| format!("frame {f} failed")).unwrap_or_default(), SlotDecoder::Audio(_) => String::new(), SlotDecoder::Remote(d) => d.last_error() } }
     pub fn as_video(&self) -> Option<&VideoDecoder> { match self { SlotDecoder::Video(d) => Some(d), _ => None } }
     pub fn as_sequence(&self) -> Option<&SequenceDecoder> { match self { SlotDecoder::Sequence(d) => Some(d), _ => None } }
+    pub fn as_remote(&self) -> Option<&RemoteDecoder> { match self { SlotDecoder::Remote(d) => Some(d), _ => None } }
+    /// Frames by number around a playhead that follows the wall clock (a cached image sequence, a remote one): a scrub
+    /// moves the clock, a loop's wrap is a move of the playhead and not a seek.
+    pub fn is_frame_addressed(&self) -> bool { matches!(self, SlotDecoder::Sequence(_) | SlotDecoder::Remote(_)) }
     /// An audio-only file: no picture, ever.
     pub fn is_audio_only(&self) -> bool { matches!(self, SlotDecoder::Audio(_)) }
 }

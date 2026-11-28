@@ -65,9 +65,9 @@ pub struct ProjectPanel {
 /// QCView's catalog context (canon row 195).
 fn tr(s: &'static str) -> &'static str { min_i18n::trc("LeftRail", s) }
 
-fn type_icon(t: MediaType) -> &'static str { match t { MediaType::Video => "video", MediaType::Audio => "music-notes", MediaType::Image => "image", MediaType::ImageSequence => "film-strip", MediaType::Playlist => "playlist", MediaType::DualPair => "frame-corners", MediaType::LiveStream => "broadcast" } }
+fn type_icon(t: MediaType) -> &'static str { match t { MediaType::Video | MediaType::RemoteSequence => "video", MediaType::Audio => "music-notes", MediaType::Image => "image", MediaType::ImageSequence => "film-strip", MediaType::Playlist => "playlist", MediaType::DualPair => "frame-corners", MediaType::LiveStream => "broadcast" } }
 /// QCView `sectionLabel`.
-fn section_label(t: MediaType) -> &'static str { match t { MediaType::Video => "Videos", MediaType::Audio => "Audio", MediaType::Image => "Images", MediaType::ImageSequence => "Image Sequences", MediaType::Playlist => "Playlists", MediaType::DualPair => "Dual Views", MediaType::LiveStream => "Live" } }
+fn section_label(t: MediaType) -> &'static str { match t { MediaType::Video | MediaType::RemoteSequence => "Videos", MediaType::Audio => "Audio", MediaType::Image => "Images", MediaType::ImageSequence => "Image Sequences", MediaType::Playlist => "Playlists", MediaType::DualPair => "Dual Views", MediaType::LiveStream => "Live" } }
 const DOUBLE_CLICK_MS: u128 = 400;
 
 impl ProjectPanel {

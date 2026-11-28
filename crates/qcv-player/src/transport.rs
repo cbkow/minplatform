@@ -154,6 +154,12 @@ impl Slot {
     }
     fn open(clip_index: usize, clip: &Clip, opts: &TransportOptions) -> Result<Slot, Error> {
         if clip.media_kind == ClipMediaKind::Audio { return Slot::open_audio(clip_index, clip) }
+        // A remote sequence (canon row 624): a provider reads the file, frames come by number as from the sequence cache.
+        if clip.media_kind == ClipMediaKind::RemoteSequence || (clip.media_kind == ClipMediaKind::Video && crate::remote_decoder::reads(&clip.media_path)) {
+            let d = crate::remote_decoder::RemoteDecoder::open(&clip.media_path, opts.seq.read_ahead, opts.seq.read_behind)?;
+            let (info, index) = (d.info.clone(), d.frame_index().clone());
+            return Ok(Slot { clip: clip_index, decoder: SlotDecoder::Remote(d), scrub: None, info, index, path: clip.media_path.clone(), src_rate: clip.source_rate, src_in: clip.source_in, src_out: clip.source_out, positioned_at_in: false })
+        }
         let src = if clip.media_kind == ClipMediaKind::ImageSequence { Source::Sequence { pattern: if clip.sequence_pattern.is_empty() { clip.media_path.clone() } else { clip.sequence_pattern.clone() }, rate: clip.source_rate, start: clip.sequence_start_frame, end: clip.sequence_end_frame, label: clip.name.clone() } } else { Source::File(clip.media_path.clone()) };
         // An image sequence min-image reads goes through QCView's sequence cache (step 2c); DPX / TGA / BMP stay on FFmpeg's image2.
         // `QCV_SEQ_FFMPEG=1` forces the image2 route (the A/B against the cache).
@@ -537,12 +543,12 @@ impl Transport {
     }
     /// The clock moves per scrub move only where QCView moves it (playlists `scrubToTimelineFrame`, image sequences `commitTime`);
     /// a single video's drag drives the scrub decoder alone and seeks the timer once, on release.
-    fn scrub_moves_clock(&self) -> bool { self.playlist_active || self.slots[self.active].decoder.as_sequence().is_some() || self.is_audio_only() }   // audio-only: QCView's `commitTime` per move
+    fn scrub_moves_clock(&self) -> bool { self.playlist_active || self.slots[self.active].decoder.is_frame_addressed() || self.is_audio_only() }   // audio-only: QCView's `commitTime` per move
     /// QCView `beginScrubAudio` / `scrubAudioMove`: the shuttle grain engine at the drag's velocity — signed source-seconds per
     /// wall second, clamped to ±32, EMA-smoothed with a dt-scaled alpha (τ = 40 ms). Speed 0 at the press: the engine's hold
     /// detection keeps it silent until the drag moves. Image sequences and clips without audio have none.
     fn skim_audio(&mut self, tl: i64) {
-        if self.fps <= 0.0 || self.slots[self.active].decoder.as_sequence().is_some() || !self.audio.has_audio() { return }
+        if self.fps <= 0.0 || self.slots[self.active].decoder.is_frame_addressed() || !self.audio.has_audio() { return }
         let sec = tl as f64 / self.fps;
         let (path, src) = self.audio_source_at(sec);
         match &mut self.skim {
@@ -816,7 +822,7 @@ impl Transport {
         if self.slots[a].decoder.is_audio_only() { if self.audio.has_audio() { let p = self.audio_position(); self.audio.seek(p); } return }
         // an image sequence wraps like QCView's frame advance (`updatePlayhead(cFrame)`, unforced): the cache's loop-seam rule
         // keeps it from being a seek — the wrapped window is already cached, and a seek's amnesty would wipe the failed ticks
-        if let Some(d) = self.slots[a].decoder.as_sequence() { d.scrub_to(src as i32); self.last_shown = None; return }
+        if self.slots[a].decoder.is_frame_addressed() { self.slots[a].decoder.scrub_to(src as i32); self.last_shown = None; return }
         self.seek_gate = Some((src as i32, self.slots[a].decoder.seeks_performed(), self.slots[a].decoder.published_seq(), Instant::now()));
         self.slots[a].decoder.seek_to_frame(src as i32);
         if self.user_wants_playback && !self.slots[a].decoder.is_playing() { self.slots[a].decoder.play(); }

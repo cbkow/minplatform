@@ -3,11 +3,12 @@
 pub use qcv_meta::{AdobeMetadata, ImageSequenceData, VideoMetadata};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum MediaType { #[default] Video = 0, Audio = 1, Image = 2, ImageSequence = 3, Playlist = 4, DualPair = 5, LiveStream = 6 }
+pub enum MediaType { #[default] Video = 0, Audio = 1, Image = 2, ImageSequence = 3, Playlist = 4, DualPair = 5, LiveStream = 6, /// a file a provider opens, its frames pulled by number (canon row 624)
+    RemoteSequence = 7 }
 impl MediaType {
-    pub fn as_str(self) -> &'static str { match self { MediaType::Video => "Video", MediaType::Audio => "Audio", MediaType::Image => "Image", MediaType::ImageSequence => "ImageSequence", MediaType::Playlist => "Playlist", MediaType::DualPair => "DualPair", MediaType::LiveStream => "LiveStream" } }
+    pub fn as_str(self) -> &'static str { match self { MediaType::Video => "Video", MediaType::Audio => "Audio", MediaType::Image => "Image", MediaType::ImageSequence => "ImageSequence", MediaType::Playlist => "Playlist", MediaType::DualPair => "DualPair", MediaType::LiveStream => "LiveStream", MediaType::RemoteSequence => "RemoteSequence" } }
     /// QCView `mediaTypeFromString`: an unknown name defaults to Video (with a warning).
-    pub fn parse(s: &str) -> MediaType { match s { "Video" => MediaType::Video, "Audio" => MediaType::Audio, "Image" => MediaType::Image, "ImageSequence" => MediaType::ImageSequence, "Playlist" => MediaType::Playlist, "DualPair" => MediaType::DualPair, "LiveStream" => MediaType::LiveStream, other => { log::warn!("ProjectIo: unknown MediaType '{other}' — defaulting to Video"); MediaType::Video } } }
+    pub fn parse(s: &str) -> MediaType { match s { "Video" => MediaType::Video, "Audio" => MediaType::Audio, "Image" => MediaType::Image, "ImageSequence" => MediaType::ImageSequence, "Playlist" => MediaType::Playlist, "DualPair" => MediaType::DualPair, "LiveStream" => MediaType::LiveStream, "RemoteSequence" => MediaType::RemoteSequence, other => { log::warn!("ProjectIo: unknown MediaType '{other}' — defaulting to Video"); MediaType::Video } } }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TransferOverride { #[default] Auto = 0, SdrRec709 = 1, Pq2020 = 2, PqP3D65 = 3, Hlg = 4, Linear = 5 }

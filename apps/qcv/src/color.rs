@@ -136,6 +136,11 @@ pub fn mincolor_ahead(device: &wgpu::Device, queue: &wgpu::Queue) -> mpsc::Recei
 /// frames' own colour data is applied before it - so with no chain of its own it starts from the project default with the
 /// input set to that. Nothing is stored until the user edits.
 fn stream_nudge(item: &qcv_project::MediaItem, mut d: Stored) -> Stored {
+    // a remote sequence arrives scene-linear in Rec.2020 (canon row 624), as row 598's raw frames do
+    if item.media_type == qcv_project::MediaType::RemoteSequence {
+        if let ClipChain::MinColor(c) = &mut d.chain { c.in_gamut = qcv_color::ids::IN_REC2020; c.in_transfer = qcv_color::ids::OETF_LINEAR; c.in_limited = 0; }
+        return d
+    }
     if item.media_type == qcv_project::MediaType::Video && item.video.video_codec == "prores_raw" {
         if let ClipChain::MinColor(c) = &mut d.chain { c.in_gamut = qcv_color::ids::IN_REC2020; c.in_transfer = qcv_color::ids::OETF_LINEAR; c.in_limited = 0; }
         return d

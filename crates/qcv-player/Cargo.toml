@@ -19,6 +19,8 @@ qcv-meta = { path = "../qcv-meta" }
 min-paths = { path = "../min-paths" }
 # QCBridge host feeds (canon rows 227-228)
 qcv-ring = { path = "../qcv-ring" }
+# remote sequences (canon rows 623-624): frames pulled from a provider, another program
+min-framelink = { path = "../min-framelink" }
 wgpu = { workspace = true }
 ffmpeg-sys-next = { workspace = true }
 crossbeam-channel = { workspace = true }

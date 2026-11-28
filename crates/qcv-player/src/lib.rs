@@ -19,6 +19,7 @@ pub mod scrub_frame_cache;
 pub mod simple_lru;
 pub mod image_sequence_cache;
 pub mod sequence_decoder;
+pub mod remote_decoder;
 pub mod video_decoder;
 pub mod audio;
 pub mod host_feed;

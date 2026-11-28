@@ -50,7 +50,8 @@ pub enum SourceMode { /// 1 video track + optional audio; locked
     Playlist, /// two free tracks A / B at the master rate (dual view, canon rows 211 / 212): no ripple, the length = the longer side
     Dual }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ClipMediaKind { Video, ImageSequence, Audio }
+pub enum ClipMediaKind { Video, ImageSequence, Audio, /// frames pulled from a provider, another program (canon row 624)
+    RemoteSequence }
 
 /// A clip on a track. `start` / `duration` in TIMELINE frames; `source_in` / `source_out` (exclusive) / `source_duration`
 /// in SOURCE frames at `source_rate`. A gap has no media and keeps only `duration`.

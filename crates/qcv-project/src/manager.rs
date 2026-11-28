@@ -124,7 +124,7 @@ impl ProjectManager {
     }
 
     // ---- adds ----
-    fn route(&mut self, id: &str, t: MediaType) { let t = if t == MediaType::ImageSequence { MediaType::Image } else { t }; if let Some(bn) = self.bins.iter_mut().find(|bn| bn.accepts == t) { bn.item_ids.push(id.to_string()); } }
+    fn route(&mut self, id: &str, t: MediaType) { let t = match t { MediaType::ImageSequence => MediaType::Image, MediaType::RemoteSequence => MediaType::Video /* with the videos: a clip in a file */, t => t }; if let Some(bn) = self.bins.iter_mut().find(|bn| bn.accepts == t) { bn.item_ids.push(id.to_string()); } }
     fn note_recent(&mut self, p: &str) { self.recent.retain(|r| r != p); self.recent.insert(0, p.to_string()); }
     /// QCView `addMediaFile`: the extension gate, Recents bump (also on a dedupe hit), images through the sequence
     /// detector, dedupe by absolute path, the default name = the file name, routed to its bin. Returns the item id
@@ -149,7 +149,7 @@ impl ProjectManager {
             if e.media_type == MediaType::Video && e.video.loaded && e.video.video_codec == "prores_raw" && e.video.pixel_format.is_empty() { probes.push(Probe::FullVideo(e.id.clone(), e.path.clone())); }
             return (Some(e.id.clone()), probes)
         }
-        let t = match extensions::kind_for_path(&abs) { extensions::Kind::Audio => MediaType::Audio, extensions::Kind::Image => MediaType::Image, _ => MediaType::Video };
+        let t = match extensions::kind_for_path(&abs) { extensions::Kind::Audio => MediaType::Audio, extensions::Kind::Image => MediaType::Image, extensions::Kind::Remote => MediaType::RemoteSequence /* no probe: FFmpeg does not read it, its facts come with the open */, _ => MediaType::Video };
         let item = MediaItem { id: new_uuid(), name: Path::new(&abs).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), path: abs.clone(), media_type: t, ..Default::default() };
         let id = item.id.clone();
         self.pool.push(item); self.route(&id, t); self.mark_dirty();

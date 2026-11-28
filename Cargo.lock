@@ -4822,6 +4822,7 @@ dependencies = [
  "libc",
  "log",
  "min-ffmpeg",
+ "min-framelink",
  "min-image",
  "min-paths",
  "min-present",
@@ -4842,6 +4843,7 @@ name = "qcv-project"
 version = "0.1.0"
 dependencies = [
  "log",
+ "min-framelink",
  "min-paths",
  "qcv-meta",
  "serde_json",
